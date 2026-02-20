@@ -1,12 +1,9 @@
-# Virtual environment
-venv/
-.venv/
-env/
+# Dependencies
+node_modules/
+.pnpm-store/
 
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
+# Build output
+dist/
 
 # Environment variables
 .env
@@ -14,5 +11,8 @@ __pycache__/
 # IDE
 .vscode/
 
-# Digests
+# Digests (generated output)
 digests/
+
+# OS
+.DS_Store
