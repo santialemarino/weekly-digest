@@ -24,37 +24,52 @@ async function main(): Promise<void> {
     const reportType = isSprint ? "Sprint Report" : "Weekly Digest";
     logger.info(`Generating Zerf ${reportType}...`);
 
-    // 1. ClickUp data
-    const sprintLabel = isSprint ? `previous sprint (offset=${SPRINT_OFFSET})` : "current sprint";
-    logger.info({ sprint: sprintLabel }, "Fetching ClickUp data");
-    const { data: clickupData, sprintPeriod } = await getAllClickUpData();
-    const totalTasks = Object.values(clickupData).reduce((sum, t) => sum + t.length, 0);
-    logger.info(
-        { tasks: totalTasks, lists: Object.keys(clickupData).length, period: sprintPeriod },
-        "ClickUp data fetched"
-    );
+    // 1 & 2. Fetch ClickUp + Slack data
+    // When using sprint offset, Slack dates depend on ClickUp's sprint period → sequential.
+    // Otherwise, both sources are independent → parallel (Promise.all).
+    let clickupData: Record<string, import("./config/types.js").TaskInfo[]>;
+    let slackData: Record<string, string[]>;
+    let sprintPeriod: string | null;
 
-    // 2. Slack data (match sprint period when using offset)
-    let slackOldest: number | undefined;
-    let slackLatest: number | undefined;
-    if (isSprint && sprintPeriod) {
-        const dates = parseSprintDates(sprintPeriod);
-        if (dates) {
-            slackOldest = dates[0].getTime() / 1000;
-            slackLatest = dates[1].getTime() / 1000;
-            logger.info({ period: sprintPeriod }, "Fetching Slack messages for sprint period");
-        } else {
-            logger.warn("Couldn't parse sprint dates — falling back to last 7 days");
+    if (isSprint) {
+        // Sequential: ClickUp first (we need sprint dates for Slack filtering)
+        const sprintLabel = `previous sprint (offset=${SPRINT_OFFSET})`;
+        logger.info({ sprint: sprintLabel }, "Fetching ClickUp data");
+        const clickup = await getAllClickUpData();
+        clickupData = clickup.data;
+        sprintPeriod = clickup.sprintPeriod;
+
+        let slackOldest: number | undefined;
+        let slackLatest: number | undefined;
+        if (sprintPeriod) {
+            const dates = parseSprintDates(sprintPeriod);
+            if (dates) {
+                slackOldest = dates[0].getTime() / 1000;
+                slackLatest = dates[1].getTime() / 1000;
+                logger.info({ period: sprintPeriod }, "Fetching Slack messages for sprint period");
+            } else {
+                logger.warn("Couldn't parse sprint dates — falling back to last 7 days");
+            }
         }
+        slackData = await getAllSlackData({ oldest: slackOldest, latest: slackLatest });
     } else {
-        logger.info("Fetching Slack messages");
+        // Parallel: both fetches are independent
+        logger.info("Fetching ClickUp + Slack data in parallel");
+        const [clickup, slack] = await Promise.all([getAllClickUpData(), getAllSlackData()]);
+        clickupData = clickup.data;
+        sprintPeriod = clickup.sprintPeriod;
+        slackData = slack;
     }
 
-    const slackData = await getAllSlackData({ oldest: slackOldest, latest: slackLatest });
+    const totalTasks = Object.values(clickupData).reduce((sum, t) => sum + t.length, 0);
     const totalMsgs = Object.values(slackData).reduce((sum, m) => sum + m.length, 0);
     logger.info(
-        { messages: totalMsgs, channels: Object.keys(slackData).length },
-        "Slack data fetched"
+        {
+            tasks: totalTasks,
+            messages: totalMsgs,
+            period: sprintPeriod,
+        },
+        "All data fetched"
     );
 
     // 3. Determine which tones are needed by enabled outputs

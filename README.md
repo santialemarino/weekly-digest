@@ -146,7 +146,8 @@ src/
 ├── config/
 │   ├── constants.ts        API URLs, limits, regex patterns
 │   ├── env.ts              Env var parsing, validation, API clients
-│   ├── i18n.ts             Report language translations (en/es)
+│   ├── schema.ts           Zod schemas (env vars + API responses)
+│   ├── i18n.ts             Report language translations, tone config
 │   ├── logger.ts           Pino logger setup
 │   └── types.ts            TypeScript interfaces
 ├── services/
@@ -171,6 +172,11 @@ src/
 ├── main.ts                 Entry point (orchestration)
 └── find-ids.ts             Utility: discover Slack channels, users, ClickUp IDs
 ```
+
+## Performance & Validation
+
+- **Parallel data fetching** — ClickUp spaces, task lists, Slack projects, and channels are all fetched concurrently with `Promise.all`. When `SPRINT_OFFSET=0`, ClickUp and Slack are also fetched in parallel (when using offset, Slack waits for ClickUp to resolve sprint dates first).
+- **Zod schema validation** — all environment variables are validated at startup with clear error messages. API responses from ClickUp and Slack are validated at runtime to catch unexpected changes early.
 
 ## Dev Scripts
 

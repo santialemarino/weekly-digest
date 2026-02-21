@@ -12,6 +12,7 @@ import {
     SPRINT_OFFSET,
 } from "../config/constants.js";
 import { clickupHeaders, SPACE_IDS, SPACE_MAP } from "../config/env.js";
+import { clickupTasksResponseSchema } from "../config/schema.js";
 import type { TaskInfo } from "../config/types.js";
 import logger from "../config/logger.js";
 
@@ -71,27 +72,37 @@ async function getTasksFromList(
             headers: clickupHeaders,
         });
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const data: any = await res.json();
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const allTasks: any[] = data.tasks ?? [];
+
+        const json: unknown = await res.json();
+        const parsed = clickupTasksResponseSchema.safeParse(json);
+        if (!parsed.success) {
+            logger.warn(
+                { listId, error: parsed.error.message },
+                "Task response validation warning"
+            );
+        }
+        const allTasks = parsed.success
+            ? parsed.data.tasks
+            : ((json as { tasks?: unknown[] }).tasks ?? []);
 
         const doneLower = new Set(DONE_STATUSES.map((s) => s.toLowerCase()));
         return (
-            allTasks
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                .filter((t: any) => doneLower.has((t.status?.status ?? "").toLowerCase()))
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                .map((t: any) => ({
-                    name: t.name ?? "",
-                    status: t.status?.status ?? "",
-                    assignees: (t.assignees ?? []).map(
-                        (a: { username?: string }) => a.username ?? ""
-                    ),
-                    description: (t.description ?? "").slice(0, DESCRIPTION_MAX_LEN),
-                    listName: t.list?.name ?? "",
-                }))
-        );
+            allTasks as Array<{
+                name?: string;
+                status?: { status?: string };
+                assignees?: Array<{ username?: string }>;
+                description?: string;
+                list?: { name?: string };
+            }>
+        )
+            .filter((t) => doneLower.has((t.status?.status ?? "").toLowerCase()))
+            .map((t) => ({
+                name: t.name ?? "",
+                status: t.status?.status ?? "",
+                assignees: (t.assignees ?? []).map((a) => a.username ?? ""),
+                description: (t.description ?? "").slice(0, DESCRIPTION_MAX_LEN),
+                listName: t.list?.name ?? "",
+            }));
     } catch (e) {
         logger.error({ listId, err: e }, "Failed to fetch tasks from ClickUp list");
         return [];
@@ -104,24 +115,46 @@ export async function getAllClickUpData(
     // For previous sprints, fetch ALL closed tasks (no date filter)
     const days = offset === 0 ? LOOKBACK_DAYS : null;
 
-    const allData: Record<string, TaskInfo[]> = {};
+    // 1. Resolve sprint lists for all spaces in parallel
+    const spaceEntries = SPACE_IDS.map((spaceId) => ({
+        spaceId,
+        projectName: spaceIdToProject(spaceId),
+    }));
+
+    const listsPerSpace = await Promise.all(
+        spaceEntries.map(async ({ spaceId, projectName }) => {
+            const label = projectName ? `${projectName} (space ${spaceId})` : `space ${spaceId}`;
+            logger.info({ space: label }, "Checking ClickUp space");
+            const lists = await getCurrentSprintLists(spaceId, offset);
+            return { projectName, lists };
+        })
+    );
+
+    // 2. Extract sprint period from the first available list name
     let sprintPeriod: string | null = null;
-
-    for (const spaceId of SPACE_IDS) {
-        const projectName = spaceIdToProject(spaceId);
-        const label = projectName ? `${projectName} (space ${spaceId})` : `space ${spaceId}`;
-        logger.info({ space: label }, "Checking ClickUp space");
-
-        const lists = await getCurrentSprintLists(spaceId, offset);
+    for (const { lists } of listsPerSpace) {
         for (const lst of lists) {
-            if (sprintPeriod === null) {
-                sprintPeriod = extractSprintPeriod(lst.name);
-            }
+            sprintPeriod = extractSprintPeriod(lst.name);
+            if (sprintPeriod) break;
+        }
+        if (sprintPeriod) break;
+    }
+
+    // 3. Fetch tasks from all lists in parallel
+    const taskFetches = listsPerSpace.flatMap(({ projectName, lists }) =>
+        lists.map(async (lst) => {
             const tasks = await getTasksFromList(lst.id, days);
-            if (tasks.length > 0) {
-                const key = projectName ?? lst.name;
-                allData[key] = [...(allData[key] ?? []), ...tasks];
-            }
+            return { key: projectName ?? lst.name, tasks };
+        })
+    );
+
+    const taskResults = await Promise.all(taskFetches);
+
+    // 4. Merge results by project key
+    const allData: Record<string, TaskInfo[]> = {};
+    for (const { key, tasks } of taskResults) {
+        if (tasks.length > 0) {
+            allData[key] = [...(allData[key] ?? []), ...tasks];
         }
     }
 

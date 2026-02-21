@@ -12,6 +12,12 @@ import {
     BOLD_RE,
 } from "../config/constants.js";
 import { slackHeaders, CHANNEL_GROUPS } from "../config/env.js";
+import {
+    slackConversationsInfoSchema,
+    slackConversationsHistorySchema,
+    slackConversationsRepliesSchema,
+    slackPostMessageSchema,
+} from "../config/schema.js";
 import type { SlackMessage } from "../config/types.js";
 import logger from "../config/logger.js";
 
@@ -29,7 +35,8 @@ export async function getChannelName(channelId: string): Promise<string> {
         const res = await fetch(`${SLACK_API}/conversations.info?${params}`, {
             headers: slackHeaders,
         });
-        const data = await res.json();
+        const json: unknown = await res.json();
+        const data = slackConversationsInfoSchema.parse(json);
         return data.channel?.name ?? channelId;
     } catch {
         return channelId;
@@ -48,7 +55,8 @@ async function getThreadReplies(channelId: string, threadTs: string): Promise<st
         const res = await fetch(`${SLACK_API}/conversations.replies?${params}`, {
             headers: slackHeaders,
         });
-        const data = await res.json();
+        const json: unknown = await res.json();
+        const data = slackConversationsRepliesSchema.parse(json);
         if (!data.ok) return [];
 
         // First message is the parent — skip it, keep only actual replies
@@ -78,14 +86,14 @@ export async function getChannelMessages(
         params.set("latest", String(latest));
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let data: any;
+    let data: ReturnType<typeof slackConversationsHistorySchema.parse> extends infer T ? T : never;
     try {
         const res = await fetch(`${SLACK_API}/conversations.history?${params}`, {
             headers: slackHeaders,
         });
         if (!res.ok) throw new Error(`${res.status}`);
-        data = await res.json();
+        const json: unknown = await res.json();
+        data = slackConversationsHistorySchema.parse(json);
     } catch (e) {
         logger.error({ channelId, err: e }, "Slack request failed");
         return [];
@@ -149,39 +157,57 @@ export async function getAllSlackData(opts?: {
     oldest?: number;
     latest?: number;
 }): Promise<Record<string, string[]>> {
-    const result: Record<string, string[]> = {};
+    const entries = Object.entries(CHANNEL_GROUPS);
 
-    for (const [project, channelIds] of Object.entries(CHANNEL_GROUPS)) {
-        const projectName = project.startsWith("C0") ? await getChannelName(project) : project;
-        logger.info({ project: projectName }, "Reading Slack project");
+    // Fetch all projects in parallel
+    const projectResults = await Promise.all(
+        entries.map(async ([project, channelIds]) => {
+            const projectName = project.startsWith("C0") ? await getChannelName(project) : project;
+            logger.info({ project: projectName }, "Reading Slack project");
 
-        const projectMsgs: string[] = [];
-        for (const cid of channelIds) {
-            const name = await getChannelName(cid);
-            logger.debug({ channel: `#${name}`, id: cid }, "Reading channel");
-            const msgs = await getChannelMessages(cid, {
-                oldest: opts?.oldest,
-                latest: opts?.latest,
-            });
-            if (msgs.length > 0) {
-                logger.debug({ channel: `#${name}`, messages: msgs.length }, "Messages fetched");
-                projectMsgs.push(...msgs);
-            } else {
-                logger.debug({ channel: `#${name}` }, "No messages (empty or error)");
-            }
-        }
-
-        if (projectMsgs.length > 0) {
-            logger.info(
-                { project: projectName, total: projectMsgs.length },
-                "Slack messages collected for project"
+            // Fetch all channels within a project in parallel
+            const channelResults = await Promise.all(
+                channelIds.map(async (cid) => {
+                    const name = await getChannelName(cid);
+                    logger.debug({ channel: `#${name}`, id: cid }, "Reading channel");
+                    const msgs = await getChannelMessages(cid, {
+                        oldest: opts?.oldest,
+                        latest: opts?.latest,
+                    });
+                    if (msgs.length > 0) {
+                        logger.debug(
+                            { channel: `#${name}`, messages: msgs.length },
+                            "Messages fetched"
+                        );
+                    } else {
+                        logger.debug({ channel: `#${name}` }, "No messages (empty or error)");
+                    }
+                    return msgs;
+                })
             );
+
+            const projectMsgs = channelResults.flat();
+
+            if (projectMsgs.length > 0) {
+                logger.info(
+                    { project: projectName, total: projectMsgs.length },
+                    "Slack messages collected for project"
+                );
+            } else {
+                logger.info({ project: projectName }, "No Slack messages for project");
+            }
+
+            return { projectName, projectMsgs };
+        })
+    );
+
+    // Build result from parallel outputs
+    const result: Record<string, string[]> = {};
+    for (const { projectName, projectMsgs } of projectResults) {
+        if (projectMsgs.length > 0) {
             result[projectName] = projectMsgs;
-        } else {
-            logger.info({ project: projectName }, "No Slack messages for project");
         }
     }
-
     return result;
 }
 
@@ -222,7 +248,8 @@ export async function postToSlack(text: string, channel: string): Promise<void> 
                 headers: { ...slackHeaders, "Content-Type": "application/json" },
                 body: JSON.stringify({ channel, text: chunks[i], mrkdwn: true }),
             });
-            const result = await res.json();
+            const json: unknown = await res.json();
+            const result = slackPostMessageSchema.parse(json);
             if (!result.ok) {
                 logger.error({ error: result.error }, "Slack post error");
             } else {

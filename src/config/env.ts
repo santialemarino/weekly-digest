@@ -1,40 +1,37 @@
 /**
  * env.ts — Environment variable parsing, validation, API headers, and clients.
+ *
+ * Uses Zod (schema.ts) to validate all required env vars at startup.
+ * Fails fast with clear error messages if anything is misconfigured.
  */
 
 import "dotenv/config";
 import Anthropic from "@anthropic-ai/sdk";
 import { SLACK_API } from "./constants.js";
 import logger from "./logger.js";
+import { envSchema } from "./schema.js";
 
-// ENVIRONMENT VARIABLES
+// ─── Validate environment variables with Zod ─────────────────────────
 
-export const SLACK_TOKEN = process.env.SLACK_BOT_TOKEN!;
-export const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN!;
-export const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY!;
-export const DIGEST_CHANNEL = process.env.SLACK_DIGEST_CHANNEL!;
+const envResult = envSchema.safeParse(process.env);
 
-// ClickUp space → project mapping (JSON, required). Maps project names to space IDs
-// so ClickUp tasks are grouped under the same project name as Slack channels.
-//   e.g. CLICKUP_SPACE_MAP={"Project1": "C0XXXXX1A", "Project2": "C0XXXXX2A"}
-export let SPACE_MAP: Record<string, string> = {};
-export let SPACE_IDS: string[] = [];
-
-const spaceMapRaw = (process.env.CLICKUP_SPACE_MAP ?? "").trim();
-if (!spaceMapRaw) {
-    logger.fatal(
-        "CLICKUP_SPACE_MAP is required. Set it in your .env as JSON, e.g.: " +
-            'CLICKUP_SPACE_MAP={"Project1": "C0XXXXX1A", "Project2": "C0XXXXX2A"}'
-    );
+if (!envResult.success) {
+    const issues = envResult.error.issues.map((i) => `  • ${i.path.join(".")}: ${i.message}`);
+    logger.fatal(`Invalid environment configuration:\n${issues.join("\n")}`);
     process.exit(1);
 }
-try {
-    SPACE_MAP = JSON.parse(spaceMapRaw);
-    SPACE_IDS = Object.values(SPACE_MAP);
-} catch (e) {
-    logger.fatal({ err: e }, "CLICKUP_SPACE_MAP is not valid JSON");
-    process.exit(1);
-}
+
+const env = envResult.data;
+
+// ─── Exports ──────────────────────────────────────────────────────────
+
+export const SLACK_TOKEN = env.SLACK_BOT_TOKEN;
+export const CLICKUP_TOKEN = env.CLICKUP_API_TOKEN;
+export const ANTHROPIC_KEY = env.ANTHROPIC_API_KEY;
+export const DIGEST_CHANNEL = env.SLACK_DIGEST_CHANNEL;
+
+export const SPACE_MAP: Record<string, string> = env.CLICKUP_SPACE_MAP;
+export const SPACE_IDS: string[] = Object.values(SPACE_MAP);
 
 /* Two modes, controlled by USE_SLACK_SECTIONS:
  *
@@ -56,25 +53,7 @@ try {
  * workspace-level channel sections/categories, this code should be updated
  * to use that instead of prefix matching.
  */
-export const USE_SLACK_SECTIONS = ["true", "1", "yes"].includes(
-    (process.env.USE_SLACK_SECTIONS ?? "false").toLowerCase()
-);
-
-// VALIDATION
-
-const required: Record<string, string | undefined> = {
-    SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN,
-    CLICKUP_API_TOKEN: process.env.CLICKUP_API_TOKEN,
-    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-    SLACK_DIGEST_CHANNEL: process.env.SLACK_DIGEST_CHANNEL,
-};
-const missing = Object.entries(required)
-    .filter(([, v]) => !v)
-    .map(([k]) => k);
-if (missing.length > 0) {
-    logger.fatal(`Missing required env vars: ${missing.join(", ")} — check your .env file`);
-    process.exit(1);
-}
+export const USE_SLACK_SECTIONS = env.USE_SLACK_SECTIONS;
 
 // API HEADERS / CLIENTS
 
@@ -102,13 +81,23 @@ async function discoverChannelsByPrefix(): Promise<Record<string, string[]>> {
         process.exit(1);
     }
 
-    let projectPrefixes: Record<string, string[]> = {};
+    let parsed: unknown;
     try {
-        projectPrefixes = JSON.parse(prefixesRaw);
-    } catch (e) {
-        logger.fatal({ err: e }, "SLACK_PROJECT_PREFIXES is not valid JSON");
+        parsed = JSON.parse(prefixesRaw);
+    } catch {
+        logger.fatal("SLACK_PROJECT_PREFIXES is not valid JSON");
         process.exit(1);
     }
+
+    const result = projectPrefixesSchema.safeParse(parsed);
+    if (!result.success) {
+        logger.fatal(
+            "SLACK_PROJECT_PREFIXES has invalid structure. " +
+                'Expected: {"Project": ["prefix1", "prefix2"]}'
+        );
+        process.exit(1);
+    }
+    const projectPrefixes = result.data;
 
     logger.info("Auto-discovering Slack channels by prefix...");
     const allChannels: Array<{ id: string; name: string }> = [];
@@ -180,19 +169,20 @@ async function discoverChannelsByPrefix(): Promise<Record<string, string[]>> {
     return Object.fromEntries(Object.entries(groups).filter(([, ids]) => ids.length > 0));
 }
 
+import { z } from "zod/v4";
+
+/** Schema for SLACK_CHANNEL_GROUPS: { "Project": ["channelId1", "channelId2"] } */
+const channelGroupsSchema = z.record(z.string(), z.array(z.string()));
+
+/** Schema for SLACK_PROJECT_PREFIXES: { "Project": ["prefix1", "prefix2"] } */
+const projectPrefixesSchema = z.record(z.string(), z.array(z.string()));
+
 export async function initChannelGroups(): Promise<void> {
     if (USE_SLACK_SECTIONS) {
         CHANNEL_GROUPS = await discoverChannelsByPrefix();
     } else {
         const groupsRaw = (process.env.SLACK_CHANNEL_GROUPS ?? "").trim();
-        if (groupsRaw) {
-            try {
-                CHANNEL_GROUPS = JSON.parse(groupsRaw);
-            } catch (e) {
-                logger.fatal({ err: e }, "SLACK_CHANNEL_GROUPS is not valid JSON");
-                process.exit(1);
-            }
-        } else {
+        if (!groupsRaw) {
             logger.fatal(
                 "No Slack channel grouping configured. " +
                     "Set SLACK_CHANNEL_GROUPS (JSON) in your .env, e.g.: " +
@@ -200,5 +190,24 @@ export async function initChannelGroups(): Promise<void> {
             );
             process.exit(1);
         }
+
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(groupsRaw);
+        } catch {
+            logger.fatal("SLACK_CHANNEL_GROUPS is not valid JSON");
+            process.exit(1);
+        }
+
+        const result = channelGroupsSchema.safeParse(parsed);
+        if (!result.success) {
+            const issues = result.error.issues.map((i) => `  • ${i.path.join(".")}: ${i.message}`);
+            logger.fatal(
+                `SLACK_CHANNEL_GROUPS has invalid structure:\n${issues.join("\n")}\n` +
+                    'Expected: {"Project": ["channelId1", "channelId2"]}'
+            );
+            process.exit(1);
+        }
+        CHANNEL_GROUPS = result.data;
     }
 }

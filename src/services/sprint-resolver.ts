@@ -9,6 +9,7 @@
 
 import "dotenv/config";
 import logger from "../config/logger.js";
+import { clickupFoldersResponseSchema, clickupListsResponseSchema } from "../config/schema.js";
 
 // CONSTANTS
 
@@ -30,29 +31,39 @@ const headers: HeadersInit = {
 interface ClickUpList {
     id: string;
     name: string;
-    [key: string]: unknown;
 }
 
 interface ClickUpFolder {
     id: string;
     name: string;
-    [key: string]: unknown;
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
+async function fetchAndParse<T>(
+    url: string,
+    schema: {
+        safeParse: (data: unknown) => { success: boolean; data?: T; error?: { message: string } };
+    }
+): Promise<T> {
     const res = await fetch(url, { headers });
     if (!res.ok) {
         throw new Error(`ClickUp API error: ${res.status} ${res.statusText}`);
     }
-    return res.json() as Promise<T>;
+    const json: unknown = await res.json();
+    const result = schema.safeParse(json);
+    if (!result.success) {
+        logger.warn({ url, error: result.error?.message }, "ClickUp response validation warning");
+        return json as T; // fallback to raw data if schema doesn't match perfectly
+    }
+    return result.data!;
 }
 
 export async function getCurrentSprintLists(spaceId: string, offset = 0): Promise<ClickUpList[]> {
     // Fetch all (non-archived) folders in the space
     let folders: ClickUpFolder[];
     try {
-        const data = await fetchJson<{ folders: ClickUpFolder[] }>(
-            `${CLICKUP_API}/space/${spaceId}/folder?archived=false`
+        const data = await fetchAndParse(
+            `${CLICKUP_API}/space/${spaceId}/folder?archived=false`,
+            clickupFoldersResponseSchema
         );
         folders = data.folders ?? [];
     } catch (e) {
@@ -87,15 +98,17 @@ export async function getCurrentSprintLists(spaceId: string, offset = 0): Promis
         // so when looking at previous sprints we need both calls to cover all lists.
         let lists: ClickUpList[];
         try {
-            const data = await fetchJson<{ lists: ClickUpList[] }>(
-                `${CLICKUP_API}/folder/${folder.id}/list?archived=false`
+            const data = await fetchAndParse(
+                `${CLICKUP_API}/folder/${folder.id}/list?archived=false`,
+                clickupListsResponseSchema
             );
             lists = data.lists ?? [];
 
             // Also fetch archived lists when looking for previous sprints
             if (offset > 0) {
-                const archivedData = await fetchJson<{ lists: ClickUpList[] }>(
-                    `${CLICKUP_API}/folder/${folder.id}/list?archived=true`
+                const archivedData = await fetchAndParse(
+                    `${CLICKUP_API}/folder/${folder.id}/list?archived=true`,
+                    clickupListsResponseSchema
                 );
                 const archived = archivedData.lists ?? [];
                 if (archived.length > 0) {

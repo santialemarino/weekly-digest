@@ -10,6 +10,7 @@ import { SLACK_API } from "../../config/constants.js";
 import { slackHeaders } from "../../config/env.js";
 import { parseTone, type DigestTone } from "../../config/i18n.js";
 import logger from "../../config/logger.js";
+import { slackConversationsOpenSchema } from "../../config/schema.js";
 import { resolveFormat, pickFormat, type TonedDigests } from "../format/types.js";
 import { postToSlack } from "../slack.js";
 import type { OutputDriver } from "./types.js";
@@ -34,7 +35,8 @@ async function openDm(userId: string): Promise<string | null> {
             headers: { ...slackHeaders, "Content-Type": "application/json" },
             body: JSON.stringify({ users: userId }),
         });
-        const data = await res.json();
+        const json: unknown = await res.json();
+        const data = slackConversationsOpenSchema.parse(json);
         if (!data.ok) {
             logger.error({ userId, error: data.error }, "Failed to open DM");
             return null;
