@@ -55,7 +55,9 @@ SLACK_CHANNEL_GROUPS={"Project1": ["C0SXXXX1A", "C0SXXXX1B"], "Project2": ["C0SX
 |---|---|---|
 | `REPORT_LANG` | `es` | Report language: `es` (Spanish) or `en` (English) |
 | `SPRINT_OFFSET` | `0` | `0` = current sprint, `1` = previous, `2` = two ago, etc. |
-| `ANTHROPIC_MODEL` | `claude-sonnet-4-20250514` | Claude model to use for generation |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-20250514` | Claude model for full generation |
+| `ANTHROPIC_MODEL_SMALL` | `claude-3-5-haiku-20241022` | Smaller/cheaper model for rewrites (auto-falls back to main model if unavailable) |
+| `ANTHROPIC_AUTO_MODEL` | `true` | Auto-select smaller model when context is small (< 25 items) |
 | `USE_SLACK_SECTIONS` | `false` | Auto-discover Slack channels by name prefix (see below) |
 | `SLACK_PROJECT_PREFIXES` | — | Required if `USE_SLACK_SECTIONS=true`. JSON: project → prefixes |
 | `LOG_LEVEL` | `info` | Logger verbosity: `trace`, `debug`, `info`, `warn`, `error`, `fatal` |
@@ -69,7 +71,7 @@ Two tones control the writing style of the generated report:
 | `informal` | Casual, emoji-rich, teammate-friendly (default for Slack) |
 | `formal` | Polished, professional, no emojis — ideal for clients/stakeholders (default for email) |
 
-Each output driver has its own tone setting (see Output drivers). Only the tones that are actually needed are generated (if all drivers use `informal`, only 1 Anthropic call is made).
+Each output driver has its own tone setting (see Output drivers). Only the tones that are actually needed are generated — if all drivers use `informal`, only 1 Anthropic call is made. When 2 tones are needed, the 2nd is a cheap **rewrite** via the small model (no context re-sent).
 
 ### Output drivers
 
@@ -151,7 +153,8 @@ src/
 │   ├── logger.ts           Pino logger setup
 │   └── types.ts            TypeScript interfaces
 ├── services/
-│   ├── anthropic.ts        Context building, prompt, digest generation
+│   ├── anthropic.ts        Context building, prompt, digest generation + tone rewrite
+│   ├── context-compressor.ts  Cleans raw data before sending to Claude
 │   ├── clickup.ts          ClickUp API: tasks, sprint periods
 │   ├── slack.ts            Slack API: messages, threads, posting
 │   ├── sprint-resolver.ts  Sprint folder/list resolution
@@ -177,6 +180,14 @@ src/
 
 - **Parallel data fetching** — ClickUp spaces, task lists, Slack projects, and channels are all fetched concurrently with `Promise.all`. When `SPRINT_OFFSET=0`, ClickUp and Slack are also fetched in parallel (when using offset, Slack waits for ClickUp to resolve sprint dates first).
 - **Zod schema validation** — all environment variables are validated at startup with clear error messages. API responses from ClickUp and Slack are validated at runtime to catch unexpected changes early.
+
+### Claude API optimizations
+
+- **Prompt caching** — The system message and context block are marked with `cache_control: ephemeral`. When generating 2 tones in the same run, the 2nd call reuses cached input tokens (~90% cheaper on the input side).
+- **Smart tone rewriting** — Instead of sending the full context twice, the 1st tone is generated from full context and the 2nd tone is rewritten from the output using the small model (Haiku). Input tokens drop ~80%.
+- **Context compression** — Before sending to Claude, raw data is cleaned: URLs are stripped, overly long messages are truncated, near-duplicate messages are removed, and redundant task descriptions are collapsed. Reduces token count without losing meaning.
+- **Dynamic model selection** — When total items (tasks + messages) are below a threshold (default: 25), the smaller/cheaper model (Haiku) is used automatically. Override with `ANTHROPIC_AUTO_MODEL=false`.
+- **Token usage logging** — Every Anthropic API call logs input, output, cache-write, and cache-read token counts for full cost visibility.
 
 ## Dev Scripts
 

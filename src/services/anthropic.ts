@@ -1,23 +1,140 @@
 /**
  * anthropic.ts — Context building, prompt template, and digest generation via Anthropic.
  *
- * Supports two tones:
- *   - "informal" — casual, emoji-rich, teammate-friendly (default)
- *   - "formal"  — polished, client-facing, no emojis
- *
- * Tone is passed per-call so the same context can produce both variants
- * without re-fetching data.
+ * Optimizations:
+ *   1. Prompt caching — system message + context block marked with cache_control
+ *      so the 2nd tone call reuses cached input tokens (~90% cheaper).
+ *   2. Smart tone rewriting — when 2 tones are needed, the 1st is generated
+ *      from full context; the 2nd is a cheap rewrite (small model, no context).
+ *   3. Dynamic model selection — if total items < threshold, uses the smaller
+ *      (faster/cheaper) model automatically. Override with ANTHROPIC_AUTO_MODEL=false.
+ *   4. Token usage logging — every API call logs input/output/cache token counts.
  */
 
 import {
     ANTHROPIC_MODEL,
+    ANTHROPIC_MODEL_SMALL,
     ANTHROPIC_MAX_TOKENS,
+    ANTHROPIC_AUTO_MODEL,
+    AUTO_MODEL_THRESHOLD,
     MAX_MSGS_PER_CHANNEL,
 } from "../config/constants.js";
 import { anthropicClient } from "../config/env.js";
 import { REPORT_LANG, getLabels, getToneInstructions, type DigestTone } from "../config/i18n.js";
 import type { TaskInfo } from "../config/types.js";
 import logger from "../config/logger.js";
+import { estimateTokens } from "./context-compressor.js";
+
+// ─── TOKEN LOGGING ───────────────────────────────────────────────────
+
+interface TokenUsage {
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+}
+
+function logTokenUsage(label: string, usage: TokenUsage): void {
+    const info: Record<string, number> = {
+        input: usage.input_tokens,
+        output: usage.output_tokens,
+    };
+    if (usage.cache_creation_input_tokens) {
+        info.cacheWrite = usage.cache_creation_input_tokens;
+    }
+    if (usage.cache_read_input_tokens) {
+        info.cacheRead = usage.cache_read_input_tokens;
+    }
+    logger.info({ tokens: info }, `Token usage [${label}]`);
+}
+
+// ─── MODEL FALLBACK ──────────────────────────────────────────────────
+
+/**
+ * Check if an error is a 404 "model not found" (e.g. Haiku unavailable on free tier).
+ * Returns true if the call should be retried with the fallback model.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function isModelNotFound(err: any): boolean {
+    return (
+        err?.status === 404 ||
+        String(err).includes("not_found_error") ||
+        String(err).includes("404")
+    );
+}
+
+/**
+ * Wrapper that calls the Anthropic API and, if the model returns 404,
+ * automatically retries with ANTHROPIC_MODEL (the main/fallback model).
+ * This lets us default to Haiku and gracefully degrade if unavailable.
+ */
+async function callWithModelFallback(
+    label: string,
+    model: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    createParams: (m: string) => any
+): Promise<{ text: string; usage: TokenUsage }> {
+    const maxRetries = 3;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const response = await anthropicClient.messages.create(createParams(model));
+            logTokenUsage(label, response.usage as TokenUsage);
+
+            const block = response.content[0];
+            if (block.type === "text") {
+                return { text: block.text, usage: response.usage as TokenUsage };
+            }
+            throw new Error("Unexpected response type");
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } catch (e: any) {
+            // Model not found → fall back to main model (once)
+            if (isModelNotFound(e) && model !== ANTHROPIC_MODEL) {
+                logger.warn(
+                    { requestedModel: model, fallbackModel: ANTHROPIC_MODEL },
+                    "Model not available on this plan — falling back to main model"
+                );
+                model = ANTHROPIC_MODEL;
+                continue; // retry immediately with fallback model
+            }
+
+            // Overloaded → exponential backoff
+            if (String(e).toLowerCase().includes("overloaded") && attempt < maxRetries) {
+                const wait = attempt * 10;
+                logger.warn(
+                    { attempt, maxRetries, retrySec: wait },
+                    "Anthropic overloaded, retrying..."
+                );
+                await new Promise((r) => setTimeout(r, wait * 1000));
+                continue;
+            }
+
+            // Unrecoverable error
+            logger.fatal({ err: e }, `Anthropic API error [${label}]`);
+            process.exit(1);
+        }
+    }
+
+    throw new Error(`Failed after ${maxRetries} retries [${label}]`);
+}
+
+// ─── MODEL SELECTION ─────────────────────────────────────────────────
+
+function selectModel(totalTasks: number, totalMessages: number): string {
+    if (!ANTHROPIC_AUTO_MODEL) return ANTHROPIC_MODEL;
+
+    const totalItems = totalTasks + totalMessages;
+    if (totalItems < AUTO_MODEL_THRESHOLD) {
+        logger.info(
+            { totalItems, threshold: AUTO_MODEL_THRESHOLD, model: ANTHROPIC_MODEL_SMALL },
+            "Auto-selected smaller model (low complexity)"
+        );
+        return ANTHROPIC_MODEL_SMALL;
+    }
+
+    logger.debug({ totalItems, model: ANTHROPIC_MODEL }, "Using standard model");
+    return ANTHROPIC_MODEL;
+}
 
 // ─── BUILD CONTEXT ────────────────────────────────────────────────────
 
@@ -72,11 +189,22 @@ export function buildContext(
 
 // ─── PROMPT TEMPLATE ──────────────────────────────────────────────────
 
-function buildPrompt(
+interface PromptParts {
+    /** Shared system message (cacheable — same for all tones) */
+    systemBase: string;
+    /** Tone-specific system suffix (small, changes per tone) */
+    systemToneSuffix: string;
+    /** Context data block (cacheable — biggest part, identical for all tones) */
+    contextBlock: string;
+    /** Prompt instructions (varies by tone — section markers, rules) */
+    instructions: string;
+}
+
+function buildPromptParts(
     context: string,
     sprintPeriod: string | null,
     tone: DigestTone
-): { system: string; user: string } {
+): PromptParts {
     const t = getLabels(REPORT_LANG);
     const tn = getToneInstructions(REPORT_LANG, tone);
     const isSprintReport = sprintPeriod !== null;
@@ -113,12 +241,20 @@ function buildPrompt(
     const projectPrefix = sectionIcons.project ? `${sectionIcons.project} ` : "";
     const personMarker = sectionIcons.person;
 
-    const system =
+    // System message: shared base (cacheable) + tone suffix
+    const systemBase =
         "You are the internal assistant for Zerf, a software company focused on the hospitality sector. " +
         `You generate concise, well-structured ${isSprintReport ? "sprint reports" : "weekly digests"}. ` +
-        `You ALWAYS write in ${t.langName}.` +
-        tn.systemSuffix;
+        `You ALWAYS write in ${t.langName}.`;
 
+    const systemToneSuffix = tn.systemSuffix;
+
+    // Context data (cacheable — biggest part, identical between tones)
+    const contextBlock =
+        `Here is the context data grouped by project. Each "## PROJECT: X" block contains ` +
+        `the closed tasks and Slack messages for that project.\n\n${context}`;
+
+    // Prompt instructions (vary by tone due to section markers)
     const tasksLabel = sectionIcons.tasks
         ? `${sectionIcons.tasks} ${t.closedTasks}`
         : t.closedTasks;
@@ -132,11 +268,7 @@ function buildPrompt(
         ? `${sectionIcons.blockers} ${t.blockers}`
         : t.blockers;
 
-    const user = `Your task is to generate the ${reportName} for ${periodDesc}.
-
-Below is the context grouped by PROJECT. Each "## PROJECT: X" block contains the closed tasks and Slack messages for that project.
-
-${context}
+    const instructions = `Your task is to generate the ${reportName} for ${periodDesc}.
 
 IMPORTANT: The projects are ALREADY defined in the context above. Use EXACTLY those project names. Do NOT re-group, split, or merge them by feature or theme.
 
@@ -190,48 +322,109 @@ Rules:
 ${tn.extraRules}
 - ${t.writeInLang}`;
 
-    return { system, user };
+    return { systemBase, systemToneSuffix, contextBlock, instructions };
 }
 
 // ─── GENERATE DIGEST ──────────────────────────────────────────────────
 
+export interface GenerateOpts {
+    totalTasks?: number;
+    totalMessages?: number;
+}
+
 export async function generateDigest(
     context: string,
     sprintPeriod: string | null = null,
-    tone: DigestTone = "informal"
+    tone: DigestTone = "informal",
+    opts: GenerateOpts = {}
 ): Promise<string> {
-    const { system: systemMsg, user: userMsg } = buildPrompt(context, sprintPeriod, tone);
+    const { systemBase, systemToneSuffix, contextBlock, instructions } = buildPromptParts(
+        context,
+        sprintPeriod,
+        tone
+    );
 
-    logger.info({ tone }, "Generating digest with tone");
+    // Dynamic model selection
+    const model = selectModel(opts.totalTasks ?? 0, opts.totalMessages ?? 0);
 
-    const maxRetries = 3;
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-            const response = await anthropicClient.messages.create({
-                model: ANTHROPIC_MODEL,
-                max_tokens: ANTHROPIC_MAX_TOKENS,
-                system: systemMsg,
-                messages: [{ role: "user", content: userMsg }],
-            });
-            const block = response.content[0];
-            if (block.type === "text") return block.text;
-            throw new Error("Unexpected response type");
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } catch (e: any) {
-            if (String(e).toLowerCase().includes("overloaded") && attempt < maxRetries) {
-                const wait = attempt * 10;
-                logger.warn(
-                    { attempt, maxRetries, retrySec: wait },
-                    "Anthropic overloaded, retrying..."
-                );
-                await new Promise((r) => setTimeout(r, wait * 1000));
-            } else {
-                logger.fatal({ err: e }, "Anthropic API error");
-                process.exit(1);
-            }
-        }
-    }
+    const estimatedInput = estimateTokens(systemBase + contextBlock + instructions);
+    logger.info({ tone, model, estimatedInputTokens: estimatedInput }, "Generating digest");
 
-    // Unreachable, but TypeScript needs it
-    throw new Error("Failed after retries");
+    const { text } = await callWithModelFallback(`generate(${tone})`, model, (m) => ({
+        model: m,
+        max_tokens: ANTHROPIC_MAX_TOKENS,
+        // System: base (cached) + tone suffix
+        system: [
+            {
+                type: "text" as const,
+                text: systemBase,
+                cache_control: { type: "ephemeral" as const },
+            },
+            ...(systemToneSuffix ? [{ type: "text" as const, text: systemToneSuffix }] : []),
+        ],
+        messages: [
+            {
+                role: "user" as const,
+                content: [
+                    // Context data (cached — biggest chunk, same across tones)
+                    {
+                        type: "text" as const,
+                        text: contextBlock,
+                        cache_control: { type: "ephemeral" as const },
+                    },
+                    // Prompt instructions (varies by tone — not cached)
+                    {
+                        type: "text" as const,
+                        text: instructions,
+                    },
+                ],
+            },
+        ],
+    }));
+
+    return text;
+}
+
+// ─── REWRITE TONE (cheap 2nd-tone generation) ────────────────────────
+
+/**
+ * Rewrite an already-generated digest in a different tone.
+ * Uses the small model (Haiku) — no need for the full context, just the
+ * ~500-word digest. Input tokens are ~90% fewer than a full generation.
+ */
+export async function rewriteTone(digest: string, targetTone: DigestTone): Promise<string> {
+    const t = getLabels(REPORT_LANG);
+    const tn = getToneInstructions(REPORT_LANG, targetTone);
+
+    const systemMsg =
+        `You rewrite reports to match a different tone while preserving ALL content, ` +
+        `structure, and information. You ALWAYS write in ${t.langName}.` +
+        tn.systemSuffix;
+
+    const userMsg =
+        `Rewrite the following report to use a ${targetTone} tone.\n\n` +
+        `Tone rules: ${tn.toneRule}.\n` +
+        `${tn.extraRules}\n\n` +
+        `IMPORTANT: Keep EXACTLY the same structure (headings, sections, separator lines). ` +
+        `Do NOT add or remove any information. Only change the wording and style.\n\n` +
+        `Report:\n\n${digest}`;
+
+    const estimatedInput = estimateTokens(systemMsg + userMsg);
+    logger.info(
+        { targetTone, model: ANTHROPIC_MODEL_SMALL, estimatedInputTokens: estimatedInput },
+        "Rewriting digest tone (cheap call)"
+    );
+
+    const { text } = await callWithModelFallback(
+        `rewrite(${targetTone})`,
+        ANTHROPIC_MODEL_SMALL,
+        (m) => ({
+            model: m,
+            max_tokens: ANTHROPIC_MAX_TOKENS,
+            system: systemMsg,
+            messages: [{ role: "user", content: userMsg }],
+        })
+    );
+
+    return text;
 }
