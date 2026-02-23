@@ -9,13 +9,13 @@
 import "dotenv/config";
 import logger from "./config/logger.js";
 
-// CONSTANTS
+// Constants
 
 const SLACK_API = "https://slack.com/api";
 const CLICKUP_API = "https://api.clickup.com/api/v2";
 const SLACK_PAGE_LIMIT = 200;
 
-// SLACK SETUP
+// Setup
 
 const slackHeaders: HeadersInit = {
     Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
@@ -66,9 +66,9 @@ async function getAllSlackChannels(): Promise<SlackChannel[]> {
 // Compact one-line helpers (avoid pino's multi-line structured output for large lists)
 const pad = (s: string, n: number) => s.padEnd(n);
 
-// MAIN
+// Runner
 
-async function main() {
+async function run() {
     // ── Slack channels ───────────────────────────────────────────────────
     console.log("\n=== SLACK CHANNELS ===\n");
     const allChannels = await getAllSlackChannels();
@@ -164,7 +164,7 @@ async function main() {
     }
 }
 
-main().catch((e) => {
+run().catch((e) => {
     logger.fatal({ err: e }, "Unhandled error");
     process.exit(1);
 });

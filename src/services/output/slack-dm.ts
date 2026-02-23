@@ -1,38 +1,24 @@
 /**
  * output/slack-dm.ts — Sends the digest as a direct message to specific Slack users.
- *
- * Env: OUTPUT_SLACK_DM_FORMAT — format to send (default: "markdown").
- *      OUTPUT_SLACK_DM_TONE  — tone to use (default: "informal").
- *      OUTPUT_SLACK_DM_USERS — comma-separated Slack user IDs.
  */
 
 import { SLACK_API } from "../../config/constants.js";
-import { slackHeaders } from "../../config/env.js";
-import { parseTone, type DigestTone } from "../../config/i18n.js";
+import type { SlackDmOutputConfig } from "../../config/digest-config.js";
 import logger from "../../config/logger.js";
 import { slackConversationsOpenSchema } from "../../config/schema.js";
-import { resolveFormat, pickFormat, type TonedDigests } from "../format/types.js";
+import { pickFormat, type TonedDigests } from "../format/types.js";
 import { postToSlack } from "../slack.js";
 import type { OutputDriver } from "./types.js";
 
-const DM_USERS = (process.env.OUTPUT_SLACK_DM_USERS ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-function getFormat() {
-    return resolveFormat(process.env.OUTPUT_SLACK_DM_FORMAT ?? "markdown") ?? "markdown";
-}
-
-function getTone(): DigestTone {
-    return parseTone(process.env.OUTPUT_SLACK_DM_TONE);
-}
-
-async function openDm(userId: string): Promise<string | null> {
+async function openDm(userId: string, slackToken: string): Promise<string | null> {
     try {
+        const headers = {
+            Authorization: `Bearer ${slackToken}`,
+            "Content-Type": "application/json",
+        };
         const res = await fetch(`${SLACK_API}/conversations.open`, {
             method: "POST",
-            headers: { ...slackHeaders, "Content-Type": "application/json" },
+            headers,
             body: JSON.stringify({ users: userId }),
         });
         const json: unknown = await res.json();
@@ -48,30 +34,28 @@ async function openDm(userId: string): Promise<string | null> {
     }
 }
 
-export function createSlackDmDriver(): OutputDriver {
-    const tone = getTone();
+export function createSlackDmDriver(config: SlackDmOutputConfig, slackToken: string): OutputDriver {
     return {
         name: "slack-dm",
-        tone,
+        tone: config.tone,
 
         async send(digests: TonedDigests): Promise<void> {
-            if (DM_USERS.length === 0) {
-                logger.warn("OUTPUT_SLACK_DM is enabled but OUTPUT_SLACK_DM_USERS is empty");
+            if (config.userIds.length === 0) {
+                logger.warn("Slack DM output enabled but no user IDs configured");
                 return;
             }
 
-            const fmt = getFormat();
-            const digest = digests[tone]!;
-            const content = pickFormat(digest, fmt);
+            const digest = digests[config.tone]!;
+            const content = pickFormat(digest, config.format);
             logger.info(
-                { recipients: DM_USERS.length, format: fmt, tone },
+                { recipients: config.userIds.length, format: config.format, tone: config.tone },
                 "Sending digest via Slack DM"
             );
 
-            for (const userId of DM_USERS) {
-                const dmChannelId = await openDm(userId);
+            for (const userId of config.userIds) {
+                const dmChannelId = await openDm(userId, slackToken);
                 if (dmChannelId) {
-                    await postToSlack(content, dmChannelId);
+                    await postToSlack(content, dmChannelId, slackToken);
                     logger.info({ userId }, "DM sent");
                 }
             }

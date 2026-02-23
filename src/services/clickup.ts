@@ -9,17 +9,15 @@ import {
     DONE_STATUSES,
     DESCRIPTION_MAX_LEN,
     SPRINT_PERIOD_RE,
-    SPRINT_OFFSET,
 } from "../config/constants.js";
-import { clickupHeaders, SPACE_IDS, SPACE_MAP } from "../config/env.js";
 import { clickupTasksResponseSchema } from "../config/schema.js";
 import type { TaskInfo } from "../config/types.js";
 import logger from "../config/logger.js";
 
-// HELPERS
+// Helpers
 
-function spaceIdToProject(spaceId: string): string | null {
-    for (const [project, sid] of Object.entries(SPACE_MAP)) {
+function spaceIdToProject(spaceMap: Record<string, string>, spaceId: string): string | null {
+    for (const [project, sid] of Object.entries(spaceMap)) {
         if (sid === spaceId) return project;
     }
     return null;
@@ -56,8 +54,10 @@ export function parseSprintDates(period: string): [Date, Date] | null {
 
 async function getTasksFromList(
     listId: string,
+    clickupToken: string,
     days: number | null = LOOKBACK_DAYS
 ): Promise<TaskInfo[]> {
+    const headers: HeadersInit = { Authorization: clickupToken };
     const params = new URLSearchParams({
         include_closed: "true",
         subtasks: "true",
@@ -68,9 +68,7 @@ async function getTasksFromList(
     }
 
     try {
-        const res = await fetch(`${CLICKUP_API}/list/${listId}/task?${params}`, {
-            headers: clickupHeaders,
-        });
+        const res = await fetch(`${CLICKUP_API}/list/${listId}/task?${params}`, { headers });
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 
         const json: unknown = await res.json();
@@ -109,23 +107,32 @@ async function getTasksFromList(
     }
 }
 
+export interface ClickUpDataParams {
+    spaceMap: Record<string, string>;
+    sprintOffset: number;
+    clickupToken: string;
+}
+
 export async function getAllClickUpData(
-    offset = SPRINT_OFFSET
+    params: ClickUpDataParams
 ): Promise<{ data: Record<string, TaskInfo[]>; sprintPeriod: string | null }> {
+    const { spaceMap, sprintOffset, clickupToken } = params;
+    const spaceIds = Object.values(spaceMap);
+
     // For previous sprints, fetch ALL closed tasks (no date filter)
-    const days = offset === 0 ? LOOKBACK_DAYS : null;
+    const days = sprintOffset === 0 ? LOOKBACK_DAYS : null;
 
     // 1. Resolve sprint lists for all spaces in parallel
-    const spaceEntries = SPACE_IDS.map((spaceId) => ({
+    const spaceEntries = spaceIds.map((spaceId) => ({
         spaceId,
-        projectName: spaceIdToProject(spaceId),
+        projectName: spaceIdToProject(spaceMap, spaceId),
     }));
 
     const listsPerSpace = await Promise.all(
         spaceEntries.map(async ({ spaceId, projectName }) => {
             const label = projectName ? `${projectName} (space ${spaceId})` : `space ${spaceId}`;
             logger.info({ space: label }, "Checking ClickUp space");
-            const lists = await getCurrentSprintLists(spaceId, offset);
+            const lists = await getCurrentSprintLists(spaceId, sprintOffset, clickupToken);
             return { projectName, lists };
         })
     );
@@ -143,7 +150,7 @@ export async function getAllClickUpData(
     // 3. Fetch tasks from all lists in parallel
     const taskFetches = listsPerSpace.flatMap(({ projectName, lists }) =>
         lists.map(async (lst) => {
-            const tasks = await getTasksFromList(lst.id, days);
+            const tasks = await getTasksFromList(lst.id, clickupToken, days);
             return { key: projectName ?? lst.name, tasks };
         })
     );

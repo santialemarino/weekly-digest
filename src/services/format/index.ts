@@ -19,15 +19,10 @@ import { toPdf } from "./pdf.js";
 
 export type { FormattedDigest, TonedDigests } from "./types.js";
 
-function isPdfEnabled(): boolean {
-    const raw = (process.env.OUTPUT_PDF ?? "").toLowerCase().trim();
-    if (!raw) return true; // default: generate PDF
-    return ["true", "1", "yes"].includes(raw);
-}
-
 export async function formatDigest(
     markdown: string,
-    meta: DigestMetadata
+    meta: DigestMetadata,
+    pdfEnabled: boolean
 ): Promise<FormattedDigest> {
     logger.info("Formatting digest into all output formats");
 
@@ -37,11 +32,11 @@ export async function formatDigest(
 
     // PDF: only if enabled (uses puppeteer / headless Chrome)
     let pdf: Buffer | null = null;
-    if (isPdfEnabled()) {
+    if (pdfEnabled) {
         logger.info("Generating PDF...");
         pdf = await toPdf(html);
     } else {
-        logger.debug("PDF generation disabled (OUTPUT_PDF=false)");
+        logger.debug("PDF generation disabled");
     }
 
     const result: FormattedDigest = { markdown, html, json, plainText, pdf };
@@ -66,7 +61,8 @@ export async function formatDigest(
  */
 export async function formatAllTones(
     rawByTone: Partial<Record<DigestTone, string>>,
-    meta: DigestMetadata
+    meta: DigestMetadata,
+    pdfEnabled: boolean
 ): Promise<TonedDigests> {
     const result: TonedDigests = {};
     const tones = Object.keys(rawByTone) as DigestTone[];
@@ -74,7 +70,7 @@ export async function formatAllTones(
     for (const tone of tones) {
         const markdown = rawByTone[tone]!;
         logger.info({ tone }, "Formatting digest for tone");
-        result[tone] = await formatDigest(markdown, meta);
+        result[tone] = await formatDigest(markdown, meta, pdfEnabled);
     }
 
     return result;

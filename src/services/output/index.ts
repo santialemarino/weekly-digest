@@ -1,14 +1,11 @@
 /**
  * output/index.ts — Output dispatcher.
  *
- * Collects all enabled output drivers, determines which tones they need,
- * and dispatches TonedDigests to each.
- *
- * Each driver is toggled via an OUTPUT_* env var (true/false).
- * Defaults: local-file=true, slack-channel=true, slack-dm=false, email=false.
+ * Builds drivers from typed OutputConfig objects and dispatches TonedDigests.
  */
 
 import type { DigestTone } from "../../config/i18n.js";
+import type { OutputConfig, SecretsConfig } from "../../config/digest-config.js";
 import logger from "../../config/logger.js";
 import type { TonedDigests } from "../format/types.js";
 import type { OutputDriver, DigestMetadata } from "./types.js";
@@ -19,59 +16,63 @@ import { createEmailDriver } from "./email.js";
 
 export type { DigestMetadata } from "./types.js";
 
-function isEnabled(envVar: string, defaultValue: boolean): boolean {
-    const raw = (process.env[envVar] ?? "").toLowerCase().trim();
-    if (!raw) return defaultValue;
-    return ["true", "1", "yes"].includes(raw);
-}
-
-function getEnabledDrivers(): OutputDriver[] {
+/**
+ * Build OutputDriver instances from typed config + secrets.
+ */
+function buildDrivers(outputs: OutputConfig[], secrets: SecretsConfig): OutputDriver[] {
     const drivers: OutputDriver[] = [];
 
-    if (isEnabled("OUTPUT_LOCAL_FILE", true)) {
-        drivers.push(createLocalFileDriver());
-    }
-    if (isEnabled("OUTPUT_SLACK_CHANNEL", true)) {
-        drivers.push(createSlackChannelDriver());
-    }
-    if (isEnabled("OUTPUT_SLACK_DM", false)) {
-        drivers.push(createSlackDmDriver());
-    }
-    if (isEnabled("OUTPUT_EMAIL", false)) {
-        drivers.push(createEmailDriver());
+    for (const cfg of outputs) {
+        switch (cfg.driver) {
+            case "local-file":
+                drivers.push(createLocalFileDriver(cfg));
+                break;
+            case "slack-channel":
+                drivers.push(createSlackChannelDriver(cfg, secrets.slackToken));
+                break;
+            case "slack-dm":
+                drivers.push(createSlackDmDriver(cfg, secrets.slackToken));
+                break;
+            case "email":
+                if (secrets.smtp) {
+                    drivers.push(createEmailDriver(cfg, secrets.smtp));
+                } else {
+                    logger.warn("Email output configured but no SMTP secrets — skipping");
+                }
+                break;
+        }
     }
 
     return drivers;
 }
 
 /**
- * Returns the set of tones that are actually needed by the enabled drivers.
- * Also checks if "all" is requested for local file (saves both tones).
+ * Returns the set of tones that are actually needed by the configured outputs.
  */
-export function getRequiredTones(): DigestTone[] {
-    const drivers = getEnabledDrivers();
+export function getRequiredTones(outputs: OutputConfig[]): DigestTone[] {
     const tones = new Set<DigestTone>();
 
-    for (const d of drivers) {
-        tones.add(d.tone);
+    for (const cfg of outputs) {
+        if (cfg.driver === "local-file" && cfg.tone === "all") {
+            tones.add("informal");
+            tones.add("formal");
+        } else {
+            tones.add(cfg.tone as DigestTone);
+        }
     }
 
-    // If local file driver requests "all" tones, include both
-    if (
-        isEnabled("OUTPUT_LOCAL_FILE", true) &&
-        (process.env.OUTPUT_LOCAL_FILE_TONE ?? "").toLowerCase().trim() === "all"
-    ) {
-        tones.add("informal");
-        tones.add("formal");
-    }
-
-    // Default to informal if nothing enabled
+    // Default to informal if nothing configured
     if (tones.size === 0) tones.add("informal");
     return [...tones];
 }
 
-export async function dispatchOutputs(digests: TonedDigests, meta: DigestMetadata): Promise<void> {
-    const drivers = getEnabledDrivers();
+export async function dispatchOutputs(
+    digests: TonedDigests,
+    meta: DigestMetadata,
+    outputs: OutputConfig[],
+    secrets: SecretsConfig
+): Promise<void> {
+    const drivers = buildDrivers(outputs, secrets);
 
     if (drivers.length === 0) {
         logger.warn("No output drivers enabled — digest was generated but not delivered anywhere");

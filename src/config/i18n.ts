@@ -7,11 +7,10 @@
  * The prompt *instructions* to Claude always stay in English — only the
  * output template and tone are translated.
  *
- * Add new languages by extending the `translations` object.
- * Add new tones by extending the `toneInstructions` object.
+ * The functions here are pure utilities that accept the language as a parameter.
  */
 
-// ─── Language ─────────────────────────────────────────────────────────
+// Language
 
 export type ReportLang = "es" | "en";
 
@@ -74,14 +73,7 @@ export function getLabels(lang: ReportLang): ReportLabels {
     return translations[lang];
 }
 
-/** Parse and validate the REPORT_LANG env var */
-export const REPORT_LANG: ReportLang = (() => {
-    const raw = (process.env.REPORT_LANG ?? "es").toLowerCase().trim();
-    if (raw === "en" || raw === "es") return raw;
-    return "es"; // default to Spanish
-})();
-
-// ─── Tone ─────────────────────────────────────────────────────────────
+// Tone
 
 /**
  * DigestTone controls *how* the LLM writes the report.

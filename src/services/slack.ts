@@ -11,7 +11,6 @@ import {
     SLACK_SEPARATOR,
     BOLD_RE,
 } from "../config/constants.js";
-import { slackHeaders, CHANNEL_GROUPS } from "../config/env.js";
 import {
     slackConversationsInfoSchema,
     slackConversationsHistorySchema,
@@ -21,19 +20,23 @@ import {
 import type { SlackMessage } from "../config/types.js";
 import logger from "../config/logger.js";
 
-// HELPERS
+// Helpers
+
+function makeHeaders(slackToken: string): HeadersInit {
+    return { Authorization: `Bearer ${slackToken}` };
+}
 
 function isHumanMessage(msg: SlackMessage): boolean {
     return !msg.subtype && !msg.bot_id && (msg.text ?? "").trim().length > MIN_MSG_LENGTH;
 }
 
-// CHANNEL INFO
+// Channel Info
 
-export async function getChannelName(channelId: string): Promise<string> {
+export async function getChannelName(channelId: string, slackToken: string): Promise<string> {
     try {
         const params = new URLSearchParams({ channel: channelId });
         const res = await fetch(`${SLACK_API}/conversations.info?${params}`, {
-            headers: slackHeaders,
+            headers: makeHeaders(slackToken),
         });
         const json: unknown = await res.json();
         const data = slackConversationsInfoSchema.parse(json);
@@ -43,9 +46,13 @@ export async function getChannelName(channelId: string): Promise<string> {
     }
 }
 
-// THREADS
+// Threads
 
-async function getThreadReplies(channelId: string, threadTs: string): Promise<string[]> {
+async function getThreadReplies(
+    channelId: string,
+    threadTs: string,
+    slackToken: string
+): Promise<string[]> {
     try {
         const params = new URLSearchParams({
             channel: channelId,
@@ -53,7 +60,7 @@ async function getThreadReplies(channelId: string, threadTs: string): Promise<st
             limit: String(SLACK_MSG_LIMIT),
         });
         const res = await fetch(`${SLACK_API}/conversations.replies?${params}`, {
-            headers: slackHeaders,
+            headers: makeHeaders(slackToken),
         });
         const json: unknown = await res.json();
         const data = slackConversationsRepliesSchema.parse(json);
@@ -67,10 +74,11 @@ async function getThreadReplies(channelId: string, threadTs: string): Promise<st
     }
 }
 
-// MESSAGES
+// Messages
 
 export async function getChannelMessages(
     channelId: string,
+    slackToken: string,
     {
         days = LOOKBACK_DAYS,
         oldest,
@@ -89,7 +97,7 @@ export async function getChannelMessages(
     let data: ReturnType<typeof slackConversationsHistorySchema.parse> extends infer T ? T : never;
     try {
         const res = await fetch(`${SLACK_API}/conversations.history?${params}`, {
-            headers: slackHeaders,
+            headers: makeHeaders(slackToken),
         });
         if (!res.ok) throw new Error(`${res.status}`);
         const json: unknown = await res.json();
@@ -119,7 +127,7 @@ export async function getChannelMessages(
         const replyCount = msg.reply_count ?? 0;
         if (replyCount > 0) {
             threadCount++;
-            const replies = await getThreadReplies(channelId, msg.ts!);
+            const replies = await getThreadReplies(channelId, msg.ts!, slackToken);
             for (const reply of replies) {
                 filtered.push(`  ↳ ${reply}`);
             }
@@ -151,28 +159,35 @@ export async function getChannelMessages(
     return filtered;
 }
 
-// FETCH ALL SLACK DATA (grouped by project)
+// Fetch all Slack data (grouped by project)
 
-export async function getAllSlackData(opts?: {
+export interface SlackDataParams {
+    channelGroups: Record<string, string[]>;
+    slackToken: string;
     oldest?: number;
     latest?: number;
-}): Promise<Record<string, string[]>> {
-    const entries = Object.entries(CHANNEL_GROUPS);
+}
+
+export async function getAllSlackData(params: SlackDataParams): Promise<Record<string, string[]>> {
+    const { channelGroups, slackToken } = params;
+    const entries = Object.entries(channelGroups);
 
     // Fetch all projects in parallel
     const projectResults = await Promise.all(
         entries.map(async ([project, channelIds]) => {
-            const projectName = project.startsWith("C0") ? await getChannelName(project) : project;
+            const projectName = project.startsWith("C0")
+                ? await getChannelName(project, slackToken)
+                : project;
             logger.info({ project: projectName }, "Reading Slack project");
 
             // Fetch all channels within a project in parallel
             const channelResults = await Promise.all(
                 channelIds.map(async (cid) => {
-                    const name = await getChannelName(cid);
+                    const name = await getChannelName(cid, slackToken);
                     logger.debug({ channel: `#${name}`, id: cid }, "Reading channel");
-                    const msgs = await getChannelMessages(cid, {
-                        oldest: opts?.oldest,
-                        latest: opts?.latest,
+                    const msgs = await getChannelMessages(cid, slackToken, {
+                        oldest: params.oldest,
+                        latest: params.latest,
                     });
                     if (msgs.length > 0) {
                         logger.debug(
@@ -211,7 +226,7 @@ export async function getAllSlackData(opts?: {
     return result;
 }
 
-// POSTING
+// Posting
 
 function markdownToSlack(text: string): string {
     return text
@@ -226,8 +241,13 @@ function markdownToSlack(text: string): string {
         .join("\n");
 }
 
-export async function postToSlack(text: string, channel: string): Promise<void> {
+export async function postToSlack(
+    text: string,
+    channel: string,
+    slackToken: string
+): Promise<void> {
     let remaining = markdownToSlack(text);
+    const headers = { ...makeHeaders(slackToken), "Content-Type": "application/json" };
 
     const chunks: string[] = [];
     while (remaining.length > SLACK_CHUNK_SIZE) {
@@ -245,7 +265,7 @@ export async function postToSlack(text: string, channel: string): Promise<void> 
         try {
             const res = await fetch(`${SLACK_API}/chat.postMessage`, {
                 method: "POST",
-                headers: { ...slackHeaders, "Content-Type": "application/json" },
+                headers,
                 body: JSON.stringify({ channel, text: chunks[i], mrkdwn: true }),
             });
             const json: unknown = await res.json();

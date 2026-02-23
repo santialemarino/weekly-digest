@@ -146,12 +146,13 @@ The digest is delivered to all enabled outputs (local file, Slack channel, DM, e
 ```
 src/
 ├── config/
-│   ├── constants.ts        API URLs, limits, regex patterns
-│   ├── env.ts              Env var parsing, validation, API clients
+│   ├── constants.ts        Static constants (URLs, limits, regex, defaults)
+│   ├── digest-config.ts    DigestConfig, SecretsConfig, OutputConfig types
+│   ├── env.ts              Builds config from .env (CLI only)
 │   ├── schema.ts           Zod schemas (env vars + API responses)
 │   ├── i18n.ts             Report language translations, tone config
 │   ├── logger.ts           Pino logger setup
-│   └── types.ts            TypeScript interfaces
+│   └── types.ts            TypeScript interfaces (TaskInfo, SlackMessage)
 ├── services/
 │   ├── anthropic.ts        Context building, prompt, digest generation + tone rewrite
 │   ├── context-compressor.ts  Cleans raw data before sending to Claude
@@ -167,12 +168,14 @@ src/
 │   │   └── pdf.ts          HTML → PDF (puppeteer)
 │   └── output/             Delivery drivers
 │       ├── types.ts        OutputDriver interface
-│       ├── index.ts        Dispatcher (collects enabled drivers)
+│       ├── index.ts        Dispatcher (builds drivers from config)
 │       ├── local-file.ts   Save to digests/ folder
 │       ├── slack-channel.ts Post to Slack channel
 │       ├── slack-dm.ts     DM specific Slack users
 │       └── email.ts        Send via email (nodemailer)
-├── main.ts                 Entry point (orchestration)
+├── core.ts                 runDigest(config, secrets) — the engine's public API
+├── index.ts                Barrel exports (public API for packages/core)
+├── cli.ts                  CLI entry point (reads .env → calls core)
 └── find-ids.ts             Utility: discover Slack channels, users, ClickUp IDs
 ```
 

@@ -4,7 +4,7 @@
   "description": "Automated sprint/weekly report generator for Zerf",
   "type": "module",
   "scripts": {
-    "dev": "tsx src/main.ts",
+    "dev": "tsx src/cli.ts",
     "find-ids": "tsx src/find-ids.ts",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",

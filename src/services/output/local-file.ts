@@ -1,22 +1,15 @@
 /**
  * output/local-file.ts — Saves the digest locally in the selected formats.
- *
- * Env: OUTPUT_LOCAL_FILE_FORMATS — comma-separated list of formats to save.
- *      Default: "md,html,json,txt,pdf" (all formats).
- *      Options: md, html, json, txt (plain text), pdf
- *      OUTPUT_LOCAL_FILE_TONE — tone to save (default: "informal").
- *      Set to "all" to save every generated tone in separate sub-folders.
  */
 
 import { writeFileSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
-import { parseTone, type DigestTone } from "../../config/i18n.js";
+import type { DigestTone } from "../../config/i18n.js";
+import type { LocalFileOutputConfig } from "../../config/digest-config.js";
 import logger from "../../config/logger.js";
 import {
-    resolveFormat,
     pickFormat,
-    isPdfFormat,
     FORMAT_EXTENSIONS,
     type DigestFormat,
     type FormattedDigest,
@@ -25,74 +18,35 @@ import {
 import type { OutputDriver, DigestMetadata } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
-const projectRoot = dirname(dirname(dirname(dirname(__filename))));
-
-const ALL_TEXT_FORMATS: DigestFormat[] = ["markdown", "html", "json", "plainText"];
-
-interface SelectedFormats {
-    text: DigestFormat[];
-    pdf: boolean;
-}
-
-function getSelectedFormats(): SelectedFormats {
-    const raw = (process.env.OUTPUT_LOCAL_FILE_FORMATS ?? "").trim();
-    if (!raw) return { text: ALL_TEXT_FORMATS, pdf: true };
-
-    const text: DigestFormat[] = [];
-    let pdf = false;
-
-    for (const token of raw.split(",")) {
-        if (isPdfFormat(token)) {
-            pdf = true;
-        } else {
-            const resolved = resolveFormat(token);
-            if (resolved && !text.includes(resolved)) {
-                text.push(resolved);
-            } else if (!resolved) {
-                logger.warn({ token: token.trim() }, "Unknown local file format — ignored");
-            }
-        }
-    }
-
-    // If nothing valid was specified, default to all
-    if (text.length === 0 && !pdf) return { text: ALL_TEXT_FORMATS, pdf: true };
-
-    return { text, pdf };
-}
-
-/** Returns the configured tone, or "all" to save every available tone */
-function getLocalTone(): DigestTone | "all" {
-    const raw = (process.env.OUTPUT_LOCAL_FILE_TONE ?? "informal").toLowerCase().trim();
-    if (raw === "all") return "all";
-    return parseTone(raw);
-}
+const defaultProjectRoot = dirname(dirname(dirname(dirname(__filename))));
 
 function saveFormats(
     digest: FormattedDigest,
     basePath: string,
-    formats: SelectedFormats
+    formats: DigestFormat[],
+    includePdf: boolean
 ): string[] {
     const saved: string[] = [];
 
-    for (const fmt of formats.text) {
+    for (const fmt of formats) {
         const path = `${basePath}.${FORMAT_EXTENSIONS[fmt]}`;
         writeFileSync(path, pickFormat(digest, fmt), "utf-8");
         saved.push(FORMAT_EXTENSIONS[fmt]);
     }
 
-    if (formats.pdf && digest.pdf) {
+    if (includePdf && digest.pdf) {
         const path = `${basePath}.pdf`;
         writeFileSync(path, digest.pdf);
         saved.push("pdf");
-    } else if (formats.pdf && !digest.pdf) {
+    } else if (includePdf && !digest.pdf) {
         logger.debug("PDF requested but not available — skipped");
     }
 
     return saved;
 }
 
-export function createLocalFileDriver(): OutputDriver {
-    const tonePref = getLocalTone();
+export function createLocalFileDriver(config: LocalFileOutputConfig): OutputDriver {
+    const tonePref = config.tone;
     // For "needs tone" detection, default to informal (all tones are saved regardless)
     const tone: DigestTone = tonePref === "all" ? "informal" : tonePref;
 
@@ -101,10 +55,9 @@ export function createLocalFileDriver(): OutputDriver {
         tone,
 
         async send(digests: TonedDigests, meta: DigestMetadata): Promise<void> {
-            const digestsDir = join(projectRoot, "digests");
+            const digestsDir = config.outputDir ?? join(defaultProjectRoot, "digests");
             mkdirSync(digestsDir, { recursive: true });
 
-            const formats = getSelectedFormats();
             const tones = Object.keys(digests) as DigestTone[];
 
             if (tonePref === "all") {
@@ -113,14 +66,14 @@ export function createLocalFileDriver(): OutputDriver {
                     const toneDir = join(digestsDir, t);
                     mkdirSync(toneDir, { recursive: true });
                     const base = join(toneDir, `digest_${meta.date}`);
-                    const saved = saveFormats(digests[t]!, base, formats);
+                    const saved = saveFormats(digests[t]!, base, config.formats, config.includePdf);
                     logger.info({ dir: toneDir, tone: t, formats: saved }, "Digest saved locally");
                 }
             } else {
                 // Save only the configured tone
                 const digest = digests[tonePref] ?? digests[tones[0]!]!;
                 const base = join(digestsDir, `digest_${meta.date}`);
-                const saved = saveFormats(digest, base, formats);
+                const saved = saveFormats(digest, base, config.formats, config.includePdf);
                 logger.info(
                     { dir: digestsDir, tone: tonePref, formats: saved },
                     "Digest saved locally"

@@ -3,17 +3,14 @@
  * and returns its lists. Used by the weekly-digest pipeline to know which
  * ClickUp lists to pull tasks from.
  *
- * Requires CLICKUP_API_TOKEN in .env.
  * Looks for folders containing "Sprint Folder" or "Development" in the name.
  */
 
-import "dotenv/config";
 import logger from "../config/logger.js";
+import { CLICKUP_API } from "../config/constants.js";
 import { clickupFoldersResponseSchema, clickupListsResponseSchema } from "../config/schema.js";
 
-// CONSTANTS
-
-const CLICKUP_API = "https://api.clickup.com/api/v2";
+// Constants
 
 // Folder names must contain one of these keywords to be considered sprint folders
 const SPRINT_FOLDER_KEYWORDS = ["Sprint Folder", "Development"];
@@ -21,12 +18,6 @@ const SPRINT_FOLDER_KEYWORDS = ["Sprint Folder", "Development"];
 // Pattern to extract the sprint/week number from a list name
 // Matches: "Sprint 1 (…)", "Week 3 (…)", "Sprint-12", etc.
 const LIST_NUMBER_PATTERN = /(?:Sprint|Week)\s*[_-]?\s*(\d+)/i;
-
-// CLICKUP SETUP
-
-const headers: HeadersInit = {
-    Authorization: process.env.CLICKUP_API_TOKEN ?? "",
-};
 
 interface ClickUpList {
     id: string;
@@ -40,10 +31,12 @@ interface ClickUpFolder {
 
 async function fetchAndParse<T>(
     url: string,
+    clickupToken: string,
     schema: {
         safeParse: (data: unknown) => { success: boolean; data?: T; error?: { message: string } };
     }
 ): Promise<T> {
+    const headers: HeadersInit = { Authorization: clickupToken };
     const res = await fetch(url, { headers });
     if (!res.ok) {
         throw new Error(`ClickUp API error: ${res.status} ${res.statusText}`);
@@ -57,12 +50,17 @@ async function fetchAndParse<T>(
     return result.data!;
 }
 
-export async function getCurrentSprintLists(spaceId: string, offset = 0): Promise<ClickUpList[]> {
+export async function getCurrentSprintLists(
+    spaceId: string,
+    offset: number,
+    clickupToken: string
+): Promise<ClickUpList[]> {
     // Fetch all (non-archived) folders in the space
     let folders: ClickUpFolder[];
     try {
         const data = await fetchAndParse(
             `${CLICKUP_API}/space/${spaceId}/folder?archived=false`,
+            clickupToken,
             clickupFoldersResponseSchema
         );
         folders = data.folders ?? [];
@@ -100,6 +98,7 @@ export async function getCurrentSprintLists(spaceId: string, offset = 0): Promis
         try {
             const data = await fetchAndParse(
                 `${CLICKUP_API}/folder/${folder.id}/list?archived=false`,
+                clickupToken,
                 clickupListsResponseSchema
             );
             lists = data.lists ?? [];
@@ -108,6 +107,7 @@ export async function getCurrentSprintLists(spaceId: string, offset = 0): Promis
             if (offset > 0) {
                 const archivedData = await fetchAndParse(
                     `${CLICKUP_API}/folder/${folder.id}/list?archived=true`,
+                    clickupToken,
                     clickupListsResponseSchema
                 );
                 const archived = archivedData.lists ?? [];
