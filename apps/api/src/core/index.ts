@@ -10,6 +10,7 @@ export { runDigest, type DigestResult } from "./core.js";
 
 // Output dispatcher
 export { dispatchOutputs } from "./services/output/index.js";
+export type { DeliveryResult } from "./services/output/index.js";
 export type { DigestMetadata } from "./services/output/types.js";
 
 // Config types (used by buildRunConfig in route handlers)

@@ -10,6 +10,7 @@ import { env } from "./env.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { prismaPlugin } from "./plugins/prisma.js";
+import { schedulerPlugin } from "./plugins/scheduler.js";
 import { digestRoutes } from "./routes/digests.js";
 
 const server = Fastify({
@@ -31,6 +32,9 @@ await server.register(prismaPlugin);
 
 // Routes
 await server.register(digestRoutes, { prefix: "/api/digests" });
+
+// Scheduler (loads after digestRoutes so executeRun is decorated)
+await server.register(schedulerPlugin);
 
 // Health check
 server.get("/health", async () => ({

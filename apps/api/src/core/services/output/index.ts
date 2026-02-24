@@ -66,17 +66,23 @@ export function getRequiredTones(outputs: OutputConfig[]): DigestTone[] {
     return [...tones];
 }
 
+export interface DeliveryResult {
+    driver: string;
+    status: "sent" | "failed";
+    error?: string;
+}
+
 export async function dispatchOutputs(
     digests: TonedDigests,
     meta: DigestMetadata,
     outputs: OutputConfig[],
     secrets: SecretsConfig
-): Promise<void> {
+): Promise<DeliveryResult[]> {
     const drivers = buildDrivers(outputs, secrets);
 
     if (drivers.length === 0) {
         logger.warn("No output drivers enabled — digest was generated but not delivered anywhere");
-        return;
+        return [];
     }
 
     logger.info(
@@ -84,13 +90,22 @@ export async function dispatchOutputs(
         "Dispatching digest to enabled outputs"
     );
 
+    const results: DeliveryResult[] = [];
+
     for (const driver of drivers) {
         try {
             await driver.send(digests, meta);
+            results.push({ driver: driver.name, status: "sent" });
         } catch (e) {
             logger.error({ driver: driver.name, err: e }, "Output driver failed");
+            results.push({ driver: driver.name, status: "failed", error: String(e) });
         }
     }
 
-    logger.info("All outputs dispatched");
+    logger.info(
+        { sent: results.filter((r) => r.status === "sent").length, total: results.length },
+        "All outputs dispatched"
+    );
+
+    return results;
 }

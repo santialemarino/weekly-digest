@@ -38,6 +38,7 @@ import {
     type SecretsConfig,
     type OutputConfig,
     type DigestResult,
+    type DeliveryResult,
 } from "../core/index.js";
 
 // Prisma-compatible JSON type. Zod infers config as Record<string, unknown>,
@@ -200,7 +201,12 @@ async function executeRun(server: FastifyInstance, digestId: string, runId: stri
         const { config, secrets } = buildRunConfig(digest);
         const result: DigestResult = await runDigest(config, secrets);
 
-        await dispatchOutputs(result.toned, result.metadata, config.outputs, secrets);
+        const deliveries: DeliveryResult[] = await dispatchOutputs(
+            result.toned,
+            result.metadata,
+            config.outputs,
+            secrets
+        );
 
         await prisma.digestRun.update({
             where: { id: runId },
@@ -211,10 +217,17 @@ async function executeRun(server: FastifyInstance, digestId: string, runId: stri
                     Object.entries(result.toned).map(([tone, fmt]) => [tone, fmt?.markdown ?? ""])
                 ),
                 completedAt: new Date(),
+                deliveries: {
+                    create: deliveries.map((d) => ({
+                        driver: d.driver,
+                        status: d.status,
+                        error: d.error ?? null,
+                    })),
+                },
             },
         });
 
-        server.log.info({ digestId, runId }, "Digest run completed");
+        server.log.info({ digestId, runId, deliveries: deliveries.length }, "Digest run completed");
     } catch (err) {
         await prisma.digestRun.update({
             where: { id: runId },
@@ -228,6 +241,11 @@ async function executeRun(server: FastifyInstance, digestId: string, runId: stri
 
 export async function digestRoutes(server: FastifyInstance) {
     const { prisma } = server;
+
+    // Expose executeRun on the server so the scheduler plugin can call it
+    server.decorate("executeRun", (digestId: string, runId: string) =>
+        executeRun(server, digestId, runId)
+    );
 
     // List all digests
     server.get("/", async (_req: FastifyRequest, reply: FastifyReply) => {
@@ -345,7 +363,7 @@ export async function digestRoutes(server: FastifyInstance) {
             });
 
             // Fire and forget — poll GET /:id/runs/:runId for status
-            executeRun(server, digest.id, run.id).catch((err) => {
+            server.executeRun(digest.id, run.id).catch((err: unknown) => {
                 server.log.error({ err, runId: run.id }, "Background digest run failed");
             });
 
