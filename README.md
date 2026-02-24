@@ -103,6 +103,15 @@ GET    /api/digests/:id/runs/:runId      Poll run status and delivery results
 POST   /api/digests/:id/preview          Generate content without delivering to outputs
 ```
 
+### Lookups (for frontend pickers)
+
+```
+GET    /api/lookups/slack/channels                List all Slack channels the bot can see
+GET    /api/lookups/slack/users                   List all non-bot Slack users
+GET    /api/lookups/clickup/spaces                List all ClickUp spaces in the team
+GET    /api/lookups/clickup/spaces/:id/lists      List folders + lists in a ClickUp space
+```
+
 ---
 
 ## Output Drivers

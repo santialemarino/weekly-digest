@@ -12,6 +12,7 @@ import cors from "@fastify/cors";
 import { prismaPlugin } from "./plugins/prisma.js";
 import { schedulerPlugin } from "./plugins/scheduler.js";
 import { digestRoutes } from "./routes/digests.js";
+import { lookupRoutes } from "./routes/lookups.js";
 
 const server = Fastify({
     logger: {
@@ -32,6 +33,7 @@ await server.register(prismaPlugin);
 
 // Routes
 await server.register(digestRoutes, { prefix: "/api/digests" });
+await server.register(lookupRoutes, { prefix: "/api/lookups" });
 
 // Scheduler (loads after digestRoutes so executeRun is decorated)
 await server.register(schedulerPlugin);
