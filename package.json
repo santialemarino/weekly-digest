@@ -5,7 +5,6 @@
   "type": "module",
   "scripts": {
     "dev": "turbo dev --filter=@zerf/api",
-    "dev:api": "turbo dev --filter=@zerf/api",
     "build": "turbo build",
     "start": "turbo start --filter=@zerf/api",
     "check": "turbo check",

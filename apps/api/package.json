@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx --env-file=../../.env --watch src/server.ts",
+    "dev": "tsx --env-file=.env --watch src/server.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node --env-file=../../.env dist/server.js",
-    "find-ids": "tsx --env-file=../../.env src/core/find-ids.ts",
+    "start": "node --env-file=.env dist/server.js",
+    "find-ids": "tsx --env-file=.env src/core/find-ids.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",

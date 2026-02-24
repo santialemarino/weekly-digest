@@ -7,7 +7,6 @@
 
 // Engine
 export { runDigest, type DigestResult } from "./core.js";
-export { discoverChannelsByPrefix } from "./core.js";
 
 // Output dispatcher
 export { dispatchOutputs } from "./services/output/index.js";

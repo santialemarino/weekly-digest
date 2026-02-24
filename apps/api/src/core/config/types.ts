@@ -1,3 +1,7 @@
+/**
+ * types.ts — Shared domain types for raw API response data.
+ */
+
 export interface TaskInfo {
     name: string;
     status: string;

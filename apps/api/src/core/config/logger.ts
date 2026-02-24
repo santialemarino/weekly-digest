@@ -14,10 +14,10 @@ const logger = pino({
     ...(isProd
         ? {} // Raw JSON — let the log aggregator handle formatting
         : {
-              transport: {
-                  target: "pino-pretty",
+    transport: {
+        target: "pino-pretty",
                   options: { colorize: true, translateTime: "HH:MM:ss", ignore: "pid,hostname" },
-              },
+        },
           }),
 });
 

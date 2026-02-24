@@ -14,6 +14,16 @@
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod/v4";
+
+/** Prisma "record not found" error code — thrown by update/delete when the row doesn't exist. */
+function isNotFound(err: unknown): boolean {
+    return (
+        typeof err === "object" &&
+        err !== null &&
+        "code" in err &&
+        (err as { code: string }).code === "P2025"
+    );
+}
 import { env } from "../env.js";
 import {
     runDigest,
@@ -29,8 +39,13 @@ import {
     type OutputConfig,
     type DigestResult,
 } from "../core/index.js";
-// Local row types mirror the Prisma schema.
-// TODO: Replace with Prisma.DigestGetPayload<...> after running pnpm db:generate.
+
+// Prisma-compatible JSON type. Zod infers config as Record<string, unknown>,
+// but Prisma's JSON input doesn't accept `unknown` values — this cast narrows it.
+type JsonObject = { [key: string]: JsonValue };
+type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
+
+// DTOs that mirror the Prisma schema — avoids a hard dependency on the generated client types (which require `prisma generate` to have run first).
 interface DigestOutputRow {
     id: string;
     driver: string;
@@ -253,7 +268,12 @@ export async function digestRoutes(server: FastifyInstance) {
 
         const { outputs, ...digestData } = result.data;
         const digest = await prisma.digest.create({
-            data: { ...digestData, outputs: { create: outputs } },
+            data: {
+                ...digestData,
+                outputs: {
+                    create: outputs.map((o) => ({ ...o, config: o.config as JsonObject })),
+                },
+            },
             include: { outputs: true },
         });
         return reply.status(201).send(digest);
@@ -271,17 +291,28 @@ export async function digestRoutes(server: FastifyInstance) {
             }
 
             const { outputs, ...digestData } = result.data;
-            const digest = await prisma.digest.update({
-                where: { id: req.params.id },
-                data: {
-                    ...digestData,
-                    ...(outputs && {
-                        outputs: { deleteMany: {}, create: outputs },
-                    }),
-                },
-                include: { outputs: true },
-            });
-            return reply.send(digest);
+            try {
+                const digest = await prisma.digest.update({
+                    where: { id: req.params.id },
+                    data: {
+                        ...digestData,
+                        ...(outputs && {
+                            outputs: {
+                                deleteMany: {},
+                                create: outputs.map((o) => ({
+                                    ...o,
+                                    config: o.config as JsonObject,
+                                })),
+                            },
+                        }),
+                    },
+                    include: { outputs: true },
+                });
+                return reply.send(digest);
+            } catch (err) {
+                if (isNotFound(err)) return reply.status(404).send({ error: "Digest not found" });
+                throw err;
+            }
         }
     );
 
@@ -289,8 +320,13 @@ export async function digestRoutes(server: FastifyInstance) {
     server.delete(
         "/:id",
         async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-            await prisma.digest.delete({ where: { id: req.params.id } });
-            return reply.status(204).send();
+            try {
+                await prisma.digest.delete({ where: { id: req.params.id } });
+                return reply.status(204).send();
+            } catch (err) {
+                if (isNotFound(err)) return reply.status(404).send({ error: "Digest not found" });
+                throw err;
+            }
         }
     );
 
@@ -308,12 +344,28 @@ export async function digestRoutes(server: FastifyInstance) {
                 data: { digestId: digest.id, status: "pending", triggeredBy: "manual" },
             });
 
-            // Fire and forget — caller polls /runs/:runId for status
+            // Fire and forget — poll GET /:id/runs/:runId for status
             executeRun(server, digest.id, run.id).catch((err) => {
                 server.log.error({ err, runId: run.id }, "Background digest run failed");
             });
 
             return reply.status(202).send({ runId: run.id, status: "pending" });
+        }
+    );
+
+    // Get run status — poll this after POST /:id/run
+    server.get(
+        "/:id/runs/:runId",
+        async (
+            req: FastifyRequest<{ Params: { id: string; runId: string } }>,
+            reply: FastifyReply
+        ) => {
+            const run = await prisma.digestRun.findUnique({
+                where: { id: req.params.runId, digestId: req.params.id },
+                include: { deliveries: true },
+            });
+            if (!run) return reply.status(404).send({ error: "Run not found" });
+            return reply.send(run);
         }
     );
 

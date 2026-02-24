@@ -1,6 +1,5 @@
 /**
  * constants.ts — Pure static constants.
- *
  */
 
 // API base URLs

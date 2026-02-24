@@ -1,0 +1,102 @@
+// Prisma schema for the Zerf Digest platform
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Digest
+// A self-contained recipe: what to pull, how to write it, where to send it,
+// and when to do it automatically.
+
+model Digest {
+  id   String @id @default(cuid())
+  name String
+
+  // Data sources
+  clickupSpaceMap    Json // Record<string, string>   — project → ClickUp space ID
+  slackChannelGroups Json // Record<string, string[]> — project → Slack channel IDs
+
+  // Report config
+  language     String  @default("es") // "es" | "en"
+  sprintOffset Int     @default(0) // 0 = weekly, 1+ = sprint offset
+  pdfEnabled   Boolean @default(true)
+
+  // Anthropic overrides (null = use global defaults from .env)
+  anthropicModel      String?
+  anthropicModelSmall String?
+  autoModel           Boolean @default(true)
+  autoModelThreshold  Int     @default(25)
+
+  // Schedule (optional)
+  scheduleEnabled  Boolean @default(false)
+  scheduleCron     String? // e.g. "0 17 * * 5" (every Friday at 17:00)
+  scheduleTimezone String? // e.g. "America/Chicago"
+
+  // Relations
+  outputs DigestOutput[]
+  runs    DigestRun[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// DigestOutput
+// One delivery channel per row. A digest can have multiple outputs.
+
+model DigestOutput {
+  id       String @id @default(cuid())
+  digest   Digest @relation(fields: [digestId], references: [id], onDelete: Cascade)
+  digestId String
+
+  driver  String  // "slack_channel" | "slack_dm" | "email" | "local_file"
+  enabled Boolean @default(true)
+  tone    String  @default("informal") // "informal" | "formal"
+  format  String  @default("markdown") // "markdown" | "html" | "json" | "plainText" | "pdf"
+  config  Json // driver-specific: { channelId } | { userIds } | { from, to, attachPdf } | {}
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// DigestRun
+// One row per execution. Stores generated content and delivery results.
+
+model DigestRun {
+  id       String @id @default(cuid())
+  digest   Digest @relation(fields: [digestId], references: [id], onDelete: Cascade)
+  digestId String
+
+  status      String // "pending" | "running" | "done" | "failed"
+  triggeredBy String // "manual" | "schedule"
+
+  sprintPeriod String? // e.g. "01/20 - 01/31"
+  rawDigests   Json? // { informal?: string, formal?: string }
+  tokenUsage   Json? // { input, output, cacheWrite, cacheRead }
+  error        String?
+
+  deliveries DigestDelivery[]
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+}
+
+// DigestDelivery
+// Per-output send result for a run.
+
+model DigestDelivery {
+  id    String    @id @default(cuid())
+  run   DigestRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  runId String
+
+  driver String // which output driver
+  status String // "sent" | "failed" | "skipped"
+  error  String?
+
+  sentAt DateTime @default(now())
+}

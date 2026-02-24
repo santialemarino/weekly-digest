@@ -13,22 +13,25 @@ Architecture: **React frontend → Fastify REST API → PostgreSQL**. Digests ar
    corepack enable
    ```
 
-2. **Start a PostgreSQL database.** Using Docker:
+2. **Install dependencies:**
+   ```bash
+   pnpm install
+   ```
+
+3. **Start a PostgreSQL database.** Using Docker (local dev only):
    ```bash
    docker compose up -d db
    ```
-   Or use an external provider.
+   Or point `DATABASE_URL` at any external PostgreSQL instance.
 
-3. **Create a `.env` file** at the repo root (see Environment Variables below).
-
-4. **Create the tables:**
+4. **Create `apps/api/.env`** by copying the example and filling in your values:
    ```bash
-   psql $DATABASE_URL -f apps/api/prisma/init.sql
+   cp apps/api/.env.example apps/api/.env
    ```
 
-5. **Install dependencies and generate the Prisma client:**
+5. **Run the database migration** (creates all tables and generates the Prisma client):
    ```bash
-   pnpm install && pnpm db:generate
+   cd apps/api && pnpm prisma migrate dev
    ```
 
 6. **Start the API:**
@@ -40,7 +43,7 @@ Architecture: **React frontend → Fastify REST API → PostgreSQL**. Digests ar
 
 ## Environment Variables
 
-These are server-level secrets — global for the whole platform. Digest-specific config (which ClickUp spaces, which Slack channels, outputs, schedule, etc.) lives in the database and is managed through the dashboard.
+Stored in `apps/api/.env` (copy from `apps/api/.env.example`). These are server-level secrets — global for the whole platform. Digest-specific config (which ClickUp spaces, which Slack channels, outputs, schedule, etc.) lives in the database and is managed through the dashboard.
 
 ### Required
 
@@ -90,13 +93,14 @@ GET /health
 ### Digests
 
 ```
-GET    /api/digests          List all digests
-POST   /api/digests          Create a digest
-GET    /api/digests/:id      Get a digest
-PUT    /api/digests/:id      Update a digest
-DELETE /api/digests/:id      Delete a digest
-POST   /api/digests/:id/run      Trigger a run (async — returns runId immediately)
-POST   /api/digests/:id/preview  Generate content without delivering to outputs
+GET    /api/digests                      List all digests
+POST   /api/digests                      Create a digest
+GET    /api/digests/:id                  Get a digest
+PUT    /api/digests/:id                  Update a digest
+DELETE /api/digests/:id                  Delete a digest
+POST   /api/digests/:id/run              Trigger a run (async — returns runId immediately)
+GET    /api/digests/:id/runs/:runId      Poll run status and delivery results
+POST   /api/digests/:id/preview          Generate content without delivering to outputs
 ```
 
 ---
@@ -144,7 +148,9 @@ weekly-digest/
 ├── apps/
 │   └── api/
 │       ├── prisma/
-│       │   └── schema.prisma       Database schema
+│       │   ├── schema.prisma       Database schema
+│       │   ├── migrations/         Migration history (committed, applied via prisma migrate)
+│       │   └── init.sql            Reference SQL — the tables as plain SQL (not used by Prisma)
 │       └── src/
 │           ├── core/               Digest engine (internal)
 │           │   ├── config/         Constants, types, i18n, logger, Zod schemas
