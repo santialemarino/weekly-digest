@@ -5,10 +5,7 @@
  * It accepts a DigestConfig + SecretsConfig and returns the generated
  * TonedDigests + metadata — ready to be dispatched to output drivers.
  *
- * This function has NO env reads and NO side effects beyond API calls.
- * It's designed to be called from:
- *   - The CLI (reads .env → builds config → calls runDigest())
- *   - The API (reads DB → builds config → calls runDigest())
+ * Called by API route handlers after building config from the database.
  */
 
 import Anthropic from "@anthropic-ai/sdk";

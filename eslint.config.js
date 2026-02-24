@@ -5,10 +5,10 @@ import prettierConfig from "eslint-config-prettier";
 import prettierPlugin from "eslint-plugin-prettier";
 
 export default defineConfig(
-    globalIgnores(["dist/", "node_modules/"]),
+    globalIgnores(["**/dist/", "**/node_modules/", "**/.turbo/"]),
     eslint.configs.recommended,
     {
-        files: ["src/**/*.ts"],
+        files: ["packages/*/src/**/*.ts", "apps/*/src/**/*.ts"],
         extends: [...tseslint.configs.recommended],
         plugins: {
             prettier: prettierPlugin,

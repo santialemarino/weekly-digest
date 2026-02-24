@@ -19,7 +19,7 @@ export const SLACK_SEPARATOR = "────────────────
 // ClickUp statuses that count as "done" (case-insensitive)
 export const DONE_STATUSES = ["complete", "closed", "finished"];
 
-// Anthropic defaults (used when building config from env)
+// Anthropic defaults — used when per-digest overrides are not set
 export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-20250514";
 export const DEFAULT_ANTHROPIC_MODEL_SMALL = "claude-3-5-haiku-20241022";
 export const DEFAULT_ANTHROPIC_MAX_TOKENS = 2048;

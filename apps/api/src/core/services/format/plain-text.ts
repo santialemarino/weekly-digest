@@ -9,14 +9,14 @@ export function toPlainText(markdown: string): string {
         markdown
             // Headers → UPPERCASE text
             .replace(/^#{1,6}\s+(.+)$/gm, (_, title: string) => title.toUpperCase())
-            // Bold / italic → just the text
+            // Bold / italic → unwrapped text
             .replace(/\*\*(.+?)\*\*/g, "$1")
             .replace(/\*(.+?)\*/g, "$1")
             .replace(/_(.+?)_/g, "$1")
-            // Horizontal rules → dashes
+            // Horizontal rules → unicode dashes
             .replace(/^---+$/gm, "────────────────────────────")
-            // Bullet points → keep as-is (already readable)
-            // Emojis → keep them (most terminals/emails render them)
+            // Bullet point syntax is preserved — it renders as-is in plain text
+            // Emojis are preserved — they render correctly in Slack, email, and most terminals
             // Collapse multiple blank lines
             .replace(/\n{3,}/g, "\n\n")
             .trim()

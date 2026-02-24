@@ -14,7 +14,7 @@ import { DESCRIPTION_MAX_LEN, MAX_SLACK_MSG_CHARS } from "../config/constants.js
 import type { TaskInfo } from "../config/types.js";
 import logger from "../config/logger.js";
 
-// ─── Helpers ─────────────────────────────────────────────────────────
+// Helpers
 
 const URL_RE = /https?:\/\/\S+/g;
 const MULTI_SPACE_RE = /\s{2,}/g;
@@ -41,7 +41,7 @@ function areSimilar(a: string, b: string, prefixLen = 60): boolean {
     return a.slice(0, prefixLen).toLowerCase() === b.slice(0, prefixLen).toLowerCase();
 }
 
-// ─── Public API ──────────────────────────────────────────────────────
+// Public API
 
 /** Compress Slack messages for a single project. */
 export function compressSlackMessages(messages: string[]): string[] {

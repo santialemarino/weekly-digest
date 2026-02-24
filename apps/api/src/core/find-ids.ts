@@ -1,18 +1,14 @@
 /**
  * find-ids.ts — Utility to discover Slack channel IDs and ClickUp workspace structure.
- * Run this whenever you need to look up IDs for configuring the weekly-digest pipeline.
- * Requires SLACK_BOT_TOKEN and CLICKUP_API_TOKEN in a .env file.
+ *
+ * Run this whenever you need to look up IDs for configuring a digest.
+ * Env vars (SLACK_BOT_TOKEN, CLICKUP_API_TOKEN) are loaded via --env-file.
  *
  * Usage: pnpm find-ids
  */
 
-import "dotenv/config";
 import logger from "./config/logger.js";
-
-// Constants
-
-const SLACK_API = "https://slack.com/api";
-const CLICKUP_API = "https://api.clickup.com/api/v2";
+import { SLACK_API, CLICKUP_API } from "./config/constants.js";
 const SLACK_PAGE_LIMIT = 200;
 
 // Setup
@@ -69,7 +65,7 @@ const pad = (s: string, n: number) => s.padEnd(n);
 // Runner
 
 async function run() {
-    // ── Slack channels ───────────────────────────────────────────────────
+    //  Slack channels
     console.log("\n=== SLACK CHANNELS ===\n");
     const allChannels = await getAllSlackChannels();
     const sorted = allChannels.sort((a, b) => a.name.localeCompare(b.name));
@@ -82,7 +78,7 @@ async function run() {
     }
     console.log(`\n  Total: ${allChannels.length} channels\n`);
 
-    // ── Slack users ─────────────────────────────────────────────────────
+    //  Slack users
     console.log("=== SLACK USERS ===\n");
     const users: Array<{ id: string; name: string; real_name: string; is_bot: boolean }> = [];
     let userCursor: string | undefined;
@@ -125,7 +121,7 @@ async function run() {
         console.log(`\n  Total: ${people.length} users\n`);
     }
 
-    // ── ClickUp structure ────────────────────────────────────────────────
+    //  ClickUp structure
     console.log("=== CLICKUP STRUCTURE ===\n");
 
     const teamsRes = await fetch(`${CLICKUP_API}/team`, { headers: clickupHeaders });

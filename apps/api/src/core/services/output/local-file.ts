@@ -3,8 +3,7 @@
  */
 
 import { writeFileSync, mkdirSync } from "fs";
-import { dirname, join } from "path";
-import { fileURLToPath } from "url";
+import { join } from "path";
 import type { DigestTone } from "../../config/i18n.js";
 import type { LocalFileOutputConfig } from "../../config/digest-config.js";
 import logger from "../../config/logger.js";
@@ -17,8 +16,9 @@ import {
 } from "../format/types.js";
 import type { OutputDriver, DigestMetadata } from "./types.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const defaultProjectRoot = dirname(dirname(dirname(dirname(__filename))));
+// process.cwd() is the package root (apps/api/) when run via pnpm/turbo.
+// Override via LocalFileOutputConfig.outputDir if needed.
+const defaultOutputRoot = process.cwd();
 
 function saveFormats(
     digest: FormattedDigest,
@@ -55,7 +55,7 @@ export function createLocalFileDriver(config: LocalFileOutputConfig): OutputDriv
         tone,
 
         async send(digests: TonedDigests, meta: DigestMetadata): Promise<void> {
-            const digestsDir = config.outputDir ?? join(defaultProjectRoot, "digests");
+            const digestsDir = config.outputDir ?? join(defaultOutputRoot, "digests");
             mkdirSync(digestsDir, { recursive: true });
 
             const tones = Object.keys(digests) as DigestTone[];

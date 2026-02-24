@@ -1,11 +1,10 @@
 /**
- * digest-config.ts — Central configuration types for the digest engine.
+ * digest-config.ts — Configuration types for the digest engine.
  *
- * Separates per-digest configuration (data sources, outputs, language)
- * from global secrets (API keys, SMTP credentials).
- *
- * These types are the "contract" between the CLI (reads .env),
- * the API (reads DB), and the core engine (accepts config objects).
+ * DigestConfig  — per-digest settings (data sources, outputs, language).
+ *                 Built by API route handlers from the database.
+ * SecretsConfig — global secrets (API keys, SMTP).
+ *                 Read from process.env by the API server at startup.
  */
 
 import type { DigestTone } from "./i18n.js";

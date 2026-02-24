@@ -1,59 +1,13 @@
 /**
- * schema.ts — Zod schemas for environment variables and API responses.
+ * schema.ts — Zod schemas for external API responses.
  *
- * Centralizes all validation: env vars are validated once at startup,
- * API responses are validated on every call for runtime safety.
+ * Validates ClickUp and Slack API responses at runtime,
+ * catching unexpected changes to third-party APIs early.
  */
 
 import { z } from "zod/v4";
 
-// ─── Helpers ──────────────────────────────────────────────────────────
-
-/** Parse a JSON string into an object, or fail with a readable message. */
-const jsonRecord = (label: string) =>
-    z
-        .string()
-        .min(1, `${label} is required`)
-        .transform((val, ctx) => {
-            try {
-                return JSON.parse(val) as Record<string, unknown>;
-            } catch {
-                ctx.addIssue({ code: "custom", message: `${label} is not valid JSON` });
-                return z.NEVER;
-            }
-        });
-
-// ─── Environment Variables ────────────────────────────────────────────
-
-export const envSchema = z.object({
-    // Required
-    SLACK_BOT_TOKEN: z.string().min(1, "SLACK_BOT_TOKEN is required"),
-    CLICKUP_API_TOKEN: z.string().min(1, "CLICKUP_API_TOKEN is required"),
-    ANTHROPIC_API_KEY: z.string().min(1, "ANTHROPIC_API_KEY is required"),
-    SLACK_DIGEST_CHANNEL: z.string().min(1, "SLACK_DIGEST_CHANNEL is required"),
-
-    // JSON mappings (required)
-    CLICKUP_SPACE_MAP: jsonRecord("CLICKUP_SPACE_MAP").pipe(z.record(z.string(), z.string())),
-    // SLACK_CHANNEL_GROUPS validated later (depends on USE_SLACK_SECTIONS)
-
-    // Optional
-    REPORT_LANG: z.enum(["es", "en"]).optional().default("es"),
-    SPRINT_OFFSET: z.coerce.number().int().min(0).optional().default(0),
-    ANTHROPIC_MODEL: z.string().optional().default("claude-sonnet-4-20250514"),
-    LOG_LEVEL: z
-        .enum(["trace", "debug", "info", "warn", "error", "fatal"])
-        .optional()
-        .default("info"),
-    USE_SLACK_SECTIONS: z
-        .string()
-        .optional()
-        .default("false")
-        .transform((v) => ["true", "1", "yes"].includes(v.toLowerCase())),
-});
-
-export type EnvConfig = z.infer<typeof envSchema>;
-
-// ─── ClickUp API Response Schemas ─────────────────────────────────────
+// ClickUp API Response Schemas
 
 export const clickupFolderSchema = z.object({
     id: z.string(),
@@ -96,7 +50,7 @@ export const clickupTasksResponseSchema = z.object({
     tasks: z.array(clickupTaskSchema).default([]),
 });
 
-// ─── Slack API Response Schemas ───────────────────────────────────────
+// Slack API Response Schemas
 
 export const slackChannelSchema = z.object({
     id: z.string(),
